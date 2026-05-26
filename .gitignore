@@ -25,10 +25,21 @@ data/*.txt
 data/*.dat
 data/*.pcd
 data/*.bag
-data/*.bag
 !data/README.md
 
-# Models (keep checkpoints out)
+# Media — too large for git
+*.mp4
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+
+# Training datasets — large binary collection
+data/data_svm/
+
+# Models (keep large checkpoints out)
 models/*.bin
 models/*.pth
 models/*.pt
@@ -48,3 +59,9 @@ Thumbs.db
 
 # Env vars
 .env
+
+# Virtual environments (any folder name)
+venv/
+.venv/
+env/
+✅/
