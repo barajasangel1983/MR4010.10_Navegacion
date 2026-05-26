@@ -517,7 +517,7 @@ def detect_pedestrians_svm(frame, pedestrian_model):
         (60, 95)
     ]
 
-    confidence_threshold = 0.2
+    confidence_threshold = 0.4
     yellow_ratio_limit = 0.10
     edge_density_min = 0.08
     step = 48
