@@ -20,6 +20,9 @@ import pygame
 import pickle
 from skimage.feature import hog
 from collections import deque
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dataset_mode
 
 
 # ==============================
@@ -972,6 +975,13 @@ def main():
         frame_count += 1
 
         # ==============================
+        # DATASET MODE CAPTURE
+        # ==============================
+        ds_counter, ds_overlay = dataset_mode.try_capture(frame, current_time)
+        if ds_overlay is not None:
+            display_frame = ds_overlay
+
+        # ==============================
         # KEYBOARD CONTROL
         # ==============================
 
@@ -1006,6 +1016,9 @@ def main():
                     line_lost_time = None  # clear any active fallback countdown
                     print(f"Autonomous mode: {autonomous_mode}")
 
+                elif key in (ord("D"), ord("d")):
+                    dataset_mode.toggle_dataset()
+
         # ==============================
         # PS4 CONTROLLER MANUAL MODE
         # ==============================
@@ -1021,6 +1034,11 @@ def main():
                     line_lost_time = None  # clear any active fallback countdown
                     last_press["ps_x"] = current_time
                     print(f"Autonomous mode: {autonomous_mode}")
+
+            if joystick.get_button(BTN_TRIANGLE):
+                if "ps_triangle" not in last_press or current_time - last_press["ps_triangle"] > 0.5:
+                    dataset_mode.toggle_dataset()
+                    last_press["ps_triangle"] = current_time
 
             if joystick.get_button(BTN_SQUARE):
                 if "ps_square" not in last_press or current_time - last_press["ps_square"] > 0.5:
@@ -1386,6 +1404,18 @@ def main():
             (0, 165, 255),
             2
         )
+
+        # Dataset mode indicator
+        if dataset_mode.dataset_mode:
+            cv2.putText(
+                debug_frame,
+                f"[DS] CAPTURE #{dataset_mode.dataset_counter}  Mode: {'ON' if dataset_mode.dataset_mode else 'OFF'}",
+                (30, 250),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2
+            )
 
         # Speed overlay — drawn on every frame in both manual and autonomous
         # modes so the operator always has current speed visible in the main
