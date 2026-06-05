@@ -904,6 +904,7 @@ def main():
 
     camera = robot.getDevice("camera")
     camera.enable(timestep)
+    #camera.recognitionEnable(timestep)
 
     # ==============================
     # LIDAR INITIALIZATION
@@ -973,6 +974,18 @@ def main():
 
         frame = get_image(camera)
         frame_count += 1
+
+        # --- PRINT RECOGNIZED OBJECTS (for mapping) ---
+        #num_obj = camera.getRecognitionNumberOfObjects()
+        #if num_obj > 0:
+            #for i in range(num_obj):
+                #obj = camera.getRecognitionObjects()[i]
+                #obj_id = obj.getId()
+                #pos = obj.getPosition()
+                #print(f"[RECOG] #{i} | id={obj_id} | pos=({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
+
+
+
 
         # ==============================
         # DATASET MODE CAPTURE
