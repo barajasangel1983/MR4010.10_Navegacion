@@ -174,6 +174,21 @@ def _dedup_labels(labels, iou_thresh=0.6):
     return [(cls, xc, yc, wn, hn) for cls, xc, yc, wn, hn, _ in keep]
 
 
+def _filter_edge_detections(labels, frame_h, frame_w):
+    """Discard detections too close to image borders or bottom ground."""
+    filtered = []
+    for cls, xc, yc, wn, hn in labels:
+        # Distance from bottom (ground reflections)
+        bottom_edge = yc + hn / 2
+        if bottom_edge > 0.95:
+            continue
+        # Distance from left/right edges
+        if xc - wn / 2 < 0.03 or xc + wn / 2 > 0.97:
+            continue
+        filtered.append((cls, xc, yc, wn, hn))
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # Labeling — color/shape heuristics
 # ---------------------------------------------------------------------------
@@ -200,7 +215,7 @@ def label_frame(frame):
     red2_top = cv2.inRange(hsv, (165, 80, 50), (180, 255, 255))
     red_top = cv2.bitwise_or(red_top, red2_top)
     top_crop = red_top[:top_h, :]
-    red_centers_top = _find_blob_centroids(top_crop, min_area=150, max_area=10000)
+    red_centers_top = _find_blob_centroids(top_crop, min_area=300, max_area=10000)
     for cx, cy, area in red_centers_top:
         radius = int(np.sqrt(area) / 2)
         x1 = max(0, cx - radius)
@@ -257,11 +272,12 @@ def label_frame(frame):
         # Bounding-box aspect ratio (stop signs are ~square)
         aspect = bw / bh if bh > 0 else 1.0
 
-        # Classification heuristics:
-        #   Stop sign: octagon ≈ 8 vertices, circularity 0.6–0.85
-        #   Speed limit: circular, circularity > 0.75, area typically smaller
-        if n_vertices >= 6 and 0.55 <= circularity <= 0.90 and 0.8 <= aspect <= 1.25:
-            cls = 0              # stop (octagon / near-square)
+        # Classification heuristics (tolerant to perspective distortion):
+        #   Stop sign: 4+ vertices, circularity 0.5–0.9, near-square 0.7–1.4
+        #   Speed limit: circular, circularity > 0.72, area typically smaller
+        if (n_vertices >= 4 and 0.50 <= circularity <= 0.90
+                and 0.70 <= aspect <= 1.40):
+            cls = 0              # stop (octagon / near-square, incl. YIELD)
         elif circularity > 0.72:
             cls = 1              # speed_limit (circular)
         else:
@@ -275,7 +291,7 @@ def label_frame(frame):
     # ------------------------------------------------------------------
     yellow_top = cv2.inRange(hsv, (18, 60, 100), (35, 255, 255))
     top_crop_y = yellow_top[:top_h, :]
-    y_centers = _find_blob_centroids(top_crop_y, min_area=150, max_area=10000)
+    y_centers = _find_blob_centroids(top_crop_y, min_area=300, max_area=10000)
     for cx, cy, area in y_centers:
         radius = int(np.sqrt(area) / 2)
         x1 = max(0, cx - radius)
@@ -312,9 +328,12 @@ def label_frame(frame):
     # ------------------------------------------------------------------
     # 3. GREEN objects (traffic light green)
     # ------------------------------------------------------------------
-    green_top = cv2.inRange(hsv, (38, 60, 50), (70, 255, 255))
-    top_crop_g = green_top[:top_h, :]
-    g_centers = _find_blob_centroids(top_crop_g, min_area=150, max_area=10000)
+    # Webots green is slightly shifted; use two bands for coverage
+    green_band1 = cv2.inRange(hsv, (35, 50, 50), (70, 255, 255))
+    green_band2 = cv2.inRange(hsv, (75, 50, 50), (90, 255, 200))
+    green_mask = cv2.bitwise_or(green_band1, green_band2)
+    top_crop_g = green_mask[:top_h, :]
+    g_centers = _find_blob_centroids(top_crop_g, min_area=300, max_area=10000)
     for cx, cy, area in g_centers:
         radius = int(np.sqrt(area) / 2)
         x1 = max(0, cx - radius)
@@ -350,8 +369,11 @@ def label_frame(frame):
         hn = bh / h
         labels.append((2, xc, yc, wn, hn))  # priority_warning
 
-    # Deduplicate overlapping boxes
+    # Deduplicate overlapping boxes (allow different classes to coexist)
     labels = _dedup_labels(labels, iou_thresh=0.6)
+
+    # Remove edge artifacts (ground reflections, cut-off detections)
+    labels = _filter_edge_detections(labels, h, w)
 
     return labels
 
@@ -381,6 +403,10 @@ def try_capture(frame, timestamp):
     last_capture_time = timestamp
 
     labels = label_frame(frame)
+
+    # Filter out edge artifacts (ground reflections, cut-off detections)
+    h, w = frame.shape[:2]
+    labels = _filter_edge_detections(labels, h, w)
 
     # Save image
     dataset_counter += 1
