@@ -8,6 +8,7 @@
 # ============================================================
 
 import cv2
+import math
 import numpy as np
 import os
 from datetime import datetime
@@ -216,30 +217,63 @@ def label_frame(frame):
 
     # Stop signs / speed limits: below traffic light zone
     below_top = red_mask[top_h:, :]
-    red_centers_below = _find_blob_centroids(below_top, min_area=300, max_area=50000)
-    for cx, cy, area in red_centers_below:
+    # Find contours directly from the mask (for shape analysis)
+    contours_below, _ = cv2.findContours(below_top, cv2.RETR_EXTERNAL,
+                                         cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours_below:
+        area = cv2.contourArea(cnt)
+        if not (300 <= area <= 50000):
+            continue
+        M = cv2.moments(cnt)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
         cy_full = cy + top_h
-        radius = int(np.sqrt(area) / 2)
-        x1 = max(0, cx - radius)
-        y1 = max(0, cy_full - radius)
-        x2 = min(w, cx + radius)
-        y2 = min(h, cy_full + radius)
+
+        # Bounding box
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(w, x + bw)
+        y2 = min(h, y + bh)
         bw = max(x2 - x1, 10)
         bh = max(y2 - y1, 10)
         xc = (x1 + bw / 2) / w
         yc = (y1 + bh / 2) / h
         wn = bw / w
         hn = bh / h
+
+        # --- Shape classification ---
+        # Perimeter & circularity
+        peri = cv2.arcLength(cnt, True)
+        circularity = 4.0 * math.pi * area / (peri * peri) if peri > 0 else 0.0
+
+        # Approximate contour to polygon
+        epsilon = 0.04 * peri       # sensitivity (higher = less detail)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+        n_vertices = len(approx)
+
+        # Bounding-box aspect ratio (stop signs are ~square)
         aspect = bw / bh if bh > 0 else 1.0
-        # Speed limit = circular, Stop = octagonal (similar in pixels)
-        # Heuristic: smaller → speed limit, larger → stop sign
-        cls = 1 if area < 3000 else 0
+
+        # Classification heuristics:
+        #   Stop sign: octagon ≈ 8 vertices, circularity 0.6–0.85
+        #   Speed limit: circular, circularity > 0.75, area typically smaller
+        if n_vertices >= 6 and 0.55 <= circularity <= 0.90 and 0.8 <= aspect <= 1.25:
+            cls = 0              # stop (octagon / near-square)
+        elif circularity > 0.72:
+            cls = 1              # speed_limit (circular)
+        else:
+            # Fallback: use area (larger → stop sign, smaller → speed limit)
+            cls = 0 if area >= 2500 else 1
+
         labels.append((cls, xc, yc, wn, hn))
 
     # ------------------------------------------------------------------
     # 2. YELLOW objects (traffic light yellow)
     # ------------------------------------------------------------------
-    yellow_top = cv2.inRange(hsv, (20, 100, 100), (35, 255, 255))
+    yellow_top = cv2.inRange(hsv, (18, 60, 100), (35, 255, 255))
     top_crop_y = yellow_top[:top_h, :]
     y_centers = _find_blob_centroids(top_crop_y, min_area=150, max_area=10000)
     for cx, cy, area in y_centers:
@@ -257,7 +291,7 @@ def label_frame(frame):
         labels.append((4, xc, yc, wn, hn))  # traffic_light_yellow
 
     # Warning signs: yellow triangles below top zone
-    yellow_sign = cv2.inRange(hsv, (20, 80, 120), (35, 255, 255))
+    yellow_sign = cv2.inRange(hsv, (18, 60, 80), (35, 255, 255))
     below_y = yellow_sign[top_h:, :]
     y_centers_below = _find_blob_centroids(below_y, min_area=500, max_area=30000)
     for cx, cy, area in y_centers_below:
@@ -278,7 +312,7 @@ def label_frame(frame):
     # ------------------------------------------------------------------
     # 3. GREEN objects (traffic light green)
     # ------------------------------------------------------------------
-    green_top = cv2.inRange(hsv, (40, 100, 80), (70, 255, 255))
+    green_top = cv2.inRange(hsv, (38, 60, 50), (70, 255, 255))
     top_crop_g = green_top[:top_h, :]
     g_centers = _find_blob_centroids(top_crop_g, min_area=150, max_area=10000)
     for cx, cy, area in g_centers:
