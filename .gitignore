@@ -30,10 +30,10 @@ data/*.bag
 *.mp4
 *.avi
 *.mkv
-*.jpg
-*.jpeg
-*.JPG
-*.JPEG
+#*.jpg
+#*.jpeg
+#*.JPG
+#*.JPEG
 
 # Training datasets — large binary collection
 data/data_svm/
