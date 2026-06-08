@@ -49,7 +49,7 @@ SIGN_MODEL_PATH = r"D:\ML\Projects\Project_5_MR4010.10_Navegacion\MR4010.10_Nave
 SIGN_CLASSES_PATH = r"D:\ML\Projects\Project_5_MR4010.10_Navegacion\MR4010.10_Navegacion\models\webots_sign_classes.json"
 
 SIGN_IMG_SIZE = (64, 64)
-SIGN_CONFIDENCE_THRESHOLD = 0.80
+SIGN_CONFIDENCE_THRESHOLD = 0.70
 SIGN_DETECTION_INTERVAL = 0.50
 
 
@@ -83,6 +83,18 @@ KD = 0.0003
 yellow_line_prev = None
 alpha_smooth = 0.25
 
+# Sign debug persistence — keep candidate boxes visible for 3 s after last detection
+_sign_debug_boxes      = []
+_sign_debug_boxes_time = 0.0
+SIGN_DEBUG_PERSIST_SEC = 3.0
+
+# CNN result persistence — hold last confirmed sign on the main debug screen for 3 s
+_cnn_held_label      = "no_sign"
+_cnn_held_confidence = 0.0
+_cnn_held_box        = None
+_cnn_held_roi_box    = None
+_cnn_held_time       = 0.0
+
 # PS4 button map
 BTN_X = 0
 BTN_CIRCLE = 1
@@ -114,7 +126,7 @@ CAMERA_HEIGHT = 320
 
 # OBJECT DETECTION CONFIG
 ENABLE_VEHICLE_DETECTION = False
-ENABLE_PEDESTRIAN_DETECTION = True
+ENABLE_PEDESTRIAN_DETECTION = False
 
 # ==============================
 # LIDAR OBSTACLE DETECTION CONFIG
@@ -688,12 +700,18 @@ def detect_sign_candidates(img_bgr, max_candidates=4):
         boxes: list of (x, y, w, h) in local ROI coordinates, sorted by area desc
         edges: Canny edge image for the debug window
     """
-    gray    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    # Bilateral filter: smooths surface texture while keeping sign outline edges sharp.
-    blurred = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+    # CLAHE: amplifies local contrast so sign faces stand out from background
+    # even when absolute brightness difference is small (Webots low-saturation issue).
+    clahe   = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
 
-    edges   = cv2.Canny(blurred, 20, 200)
+    # Light Gaussian blur — less aggressive than bilateral, preserves sign outlines.
+    blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
+
+    # Low thresholds: Webots sign edges are weak, so we need to catch them early.
+    edges   = cv2.Canny(blurred, 30, 90)
 
     # Dilate to close small gaps in the sign outline from rendering artifacts.
     kernel        = np.ones((3, 3), np.uint8)
@@ -846,10 +864,10 @@ def classify_sign_frame(frame_bgr, sign_model, sign_class_names):
     """
     height, width, _ = frame_bgr.shape
 
-    roi_x1 = int(width * 0.55)
-    roi_y1 = int(height * 0.05)
-    roi_x2 = int(width * 0.98)
-    roi_y2 = int(height * 0.70)
+    roi_x1 = int(width * 2 / 3)
+    roi_y1 = 0
+    roi_x2 = width
+    roi_y2 = height
 
     search_roi_box = (roi_x1, roi_y1, roi_x2 - roi_x1, roi_y2 - roi_y1)
     roi = frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
@@ -857,27 +875,54 @@ def classify_sign_frame(frame_bgr, sign_model, sign_class_names):
     candidates, candidate_mask = detect_sign_candidates(roi)
 
     # ── DEBUG WINDOW ──────────────────────────────────────────────────────────
-    # Left  = ROI crop with cyan boxes around accepted candidates.
-    # Right = Canny edge image — use this to verify sign outlines are visible.
-    # If the right panel shows no edges around the sign, lower Canny thresholds.
-    # If the left panel shows no cyan boxes, relax shape filters.
+    global _sign_debug_boxes, _sign_debug_boxes_time
+
+    now = time.time()
+
+    # Refresh the stored boxes whenever the heuristic finds something.
+    if candidates:
+        _sign_debug_boxes      = list(candidates)
+        _sign_debug_boxes_time = now
+
+    # Use the stored boxes if they are still within the persistence window,
+    # so boxes stay visible for 3 s even when no candidates are found.
+    display_boxes = (
+        _sign_debug_boxes
+        if (now - _sign_debug_boxes_time) < SIGN_DEBUG_PERSIST_SEC
+        else []
+    )
+
     debug_roi   = cv2.resize(roi, (320, 200))
     debug_edges = cv2.resize(candidate_mask, (320, 200))
     debug_edge3 = cv2.cvtColor(debug_edges, cv2.COLOR_GRAY2BGR)
     scale_x = 320 / roi.shape[1]
     scale_y = 200 / roi.shape[0]
-    for bx, by, bw, bh in candidates:
+    for bx, by, bw, bh in display_boxes:
         cv2.rectangle(
             debug_roi,
             (int(bx * scale_x), int(by * scale_y)),
             (int((bx + bw) * scale_x), int((by + bh) * scale_y)),
-            (0, 255, 255), 2
+            (255, 0, 0), 2
         )
     cv2.imshow("Sign Heuristic Debug", np.hstack([debug_roi, debug_edge3]))
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ── GRID FALLBACK ─────────────────────────────────────────────────────────
+    # If the heuristic found no candidates, tile the ROI into overlapping crops
+    # and classify each. This guarantees the CNN always sees the sign even when
+    # edge/color heuristics completely miss it.
     if not candidates:
-        return "no_sign", 1.0, None, search_roi_box
+        rh, rw, _ = roi.shape
+        grid_boxes = []
+        for scale in [0.6, 0.85]:
+            cw_g = int(rw * scale)
+            ch_g = int(rh * scale)
+            for gy in range(0, rh - ch_g + 1, max(1, ch_g // 2)):
+                for gx in range(0, rw - cw_g + 1, max(1, cw_g // 2)):
+                    grid_boxes.append((gx, gy, cw_g, ch_g))
+
+        candidates = grid_boxes
+    # ─────────────────────────────────────────────────────────────────────────
 
     best_label      = "no_sign"
     best_confidence = 0.0
@@ -898,9 +943,6 @@ def classify_sign_frame(frame_bgr, sign_model, sign_class_names):
         confidence  = float(predictions[class_id])
         label       = sign_class_names[class_id]
 
-        # Keep this result only if it is a real sign and better than what we
-        # already have. no_sign results are ignored — if every crop is no_sign,
-        # the function returns no_sign at the end.
         if label != "no_sign" and confidence > best_confidence:
             best_label      = label
             best_confidence = confidence
@@ -1245,6 +1287,7 @@ def process_lidar_data(lidar):
 
 def main():
     global ENABLE_SIGN_DETECTION
+    global _cnn_held_label, _cnn_held_confidence, _cnn_held_box, _cnn_held_roi_box, _cnn_held_time
 
     speed = 0
     angle = 0.0
@@ -1530,6 +1573,14 @@ def main():
                 sign_class_names
             )
 
+            # Hold the last confident non-no_sign result for 3 s on the main debug screen.
+            if sign_label != "no_sign" and sign_confidence >= SIGN_CONFIDENCE_THRESHOLD:
+                _cnn_held_label      = sign_label
+                _cnn_held_confidence = sign_confidence
+                _cnn_held_box        = sign_box
+                _cnn_held_roi_box    = sign_search_roi_box
+                _cnn_held_time       = current_time
+
         for x, y, w, h in vehicle_boxes:
             cv2.rectangle(debug_frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
             cv2.putText(debug_frame, "Vehicle", (x, y - 8),
@@ -1565,9 +1616,16 @@ def main():
         # If confidence is lower than the threshold, show the prediction as uncertain.
 
         if ENABLE_SIGN_DETECTION and sign_model is not None:
-            # Always draw the green search ROI and status, even when no candidate
-            # was found (sign_box is None). draw_sign_detection handles that case.
-            if sign_box is None or sign_confidence >= SIGN_CONFIDENCE_THRESHOLD:
+            # Use the 3-second held result if a real sign was recently confirmed.
+            if (current_time - _cnn_held_time) < SIGN_DEBUG_PERSIST_SEC and _cnn_held_label != "no_sign":
+                draw_sign_detection(
+                    debug_frame,
+                    _cnn_held_label,
+                    _cnn_held_confidence,
+                    _cnn_held_box,
+                    _cnn_held_roi_box
+                )
+            elif sign_box is None or sign_confidence >= SIGN_CONFIDENCE_THRESHOLD:
                 draw_sign_detection(
                     debug_frame,
                     sign_label,
@@ -1576,8 +1634,6 @@ def main():
                     sign_search_roi_box
                 )
             else:
-                # Candidate found but CNN not confident enough.
-                # Still draw search ROI so the area is visible.
                 draw_sign_detection(
                     debug_frame,
                     f"uncertain: {sign_label}",
