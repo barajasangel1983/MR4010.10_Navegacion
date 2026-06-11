@@ -1179,17 +1179,13 @@ def main():
         CATEGORIES = {
             "vehicle": ["bus"],
             "traffic_light": ["traffic light"],
-            "sign": ["speed limit panel", "highway sign", "caution sign", "order sign", "stop sign", "yield sign"],
+            "sign": ["speed limit panel", "highway sign"],
             "obstacle": ["traffic cone", "barrel", "crash barrier"]
         }
         
         num_obj = camera.getRecognitionNumberOfObjects()
         if num_obj > 0 and ENABLE_OBJECT_DETECTION:
             objects = camera.getRecognitionObjects()
-            # Debug: print all detected models (remove after fixing)
-            all_models = [obj.getModel() for obj in objects]
-            print(f"[DEBUG] Detected models: {all_models}")
-            
             for obj in objects:
                 model = obj.getModel()
                 # Debug: check category matching for each model
