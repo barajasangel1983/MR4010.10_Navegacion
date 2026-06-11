@@ -1026,6 +1026,7 @@ def update_adas_panel(adas_display, gps, gyro, steering_wheel, ADAS_SENSORS):
 # ==============================
 
 def main():
+    global ADAS_MONITORING
     speed = 0
     angle = 0.0
     previous_angle = 0.0   # seed value for the steering smoothing
@@ -1072,7 +1073,9 @@ def main():
     # ==============================
     gps = robot.getDevice("gps")
     gyro = robot.getDevice("gyro")
-    steering_wheel = robot.getDevice("vehicle steering wheel")
+
+    # Steering wheel: Webots node name is "steeringWheel" (not the display name field)
+    steering_wheel = robot.getDevice("steeringWheel")
 
     if gps:
         gps.enable(timestep)
@@ -1096,7 +1099,7 @@ def main():
     keyboard.enable(timestep)
 
     # ADAS display panel (separate from camera display)
-    adas_display_ref = [adas_display] if ADAS_MONITORING else [None]
+    adas_display = Display("adas_monitor") if ADAS_MONITORING else None
     if adas_display:
         print("ADAS Monitoring panel enabled.")
 
@@ -1218,10 +1221,10 @@ def main():
                     if ADAS_SENSORS:
                         ADAS_MONITORING = not ADAS_MONITORING
                         if ADAS_MONITORING:
-                            adas_display_ref[0] = Display("adas_monitor")
+                            adas_display = Display("adas_monitor")
                             print("ADAS Monitoring: ON")
                         else:
-                            adas_display_ref[0] = None
+                            adas_display = None
                             print("ADAS Monitoring: OFF")
 
         # ==============================
@@ -1722,8 +1725,8 @@ def main():
         # ADAS MONITORING PANEL UPDATE
         # ==============================
         # Read sensors and update ADAS display panel (if enabled)
-        if ADAS_MONITORING and adas_display_ref[0] is not None:
-            update_adas_panel(adas_display_ref[0], gps, gyro, steering_wheel, ADAS_SENSORS)
+        if ADAS_MONITORING and adas_display is not None:
+            update_adas_panel(adas_display, gps, gyro, steering_wheel, ADAS_SENSORS)
 
         # Display image in Webots display
         if DEBUG_PANEL:
