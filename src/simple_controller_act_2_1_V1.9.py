@@ -32,15 +32,12 @@
 #   - Toggle with keyboard D or PS4 Triangle.
 #   - Frame counter and mode overlay drawn on debug display.
 #
-# ADAS MONITORING PANEL
-#   - Toggle with keyboard A (toggle ON/OFF at runtime).
-#   - Displays real-time sensor data on a separate Webots display window.
-#   - Sensors: Steering Wheel angle, GPS speed, GPS coordinates (X/Y/Z), Gyro (X/Y/Z rad/s).
-#   - Configurable which sensors to display via ADAS_SENSORS list.
-#   - Initialize GPS, Gyro, and Steering Wheel devices in controller setup.
+# DEBUG PANEL
+#   - Displays real-time debug information on camera feed.
+#   - Toggle at runtime with key P (Debug Panel mode).
 #
 # INPUT / CONTROL
-#   - Keyboard: arrows (speed/angle), S (toggle autonomous), A (toggle ADAS panel),
+#   - Keyboard: arrows (speed/angle), C (capture image), S (toggle autonomous),
 #     D (dataset mode), P (debug panel), Q (quit).
 #   - PS4 controller: left stick (steering), R2 (throttle), L2 (brake/reverse),
 #     X (toggle autonomous), Square (save image), Triangle (dataset mode).
@@ -50,7 +47,6 @@
 #   - "Self Driving Debug": annotated camera view with line, lane center, HUD.
 #   - "Yellow Mask Debug": binary ROI mask used for line detection.
 #   - "PID Response Chart": live error (px), steering (rad), and speed (km/h) traces.
-#   - "ADAS Monitor": dedicated panel for GPS, Gyro, Steering Wheel sensor values.
 #   - Speed overlay color: cyan = autonomous, green = manual.
 # ============================================================
 
@@ -165,19 +161,6 @@ DEBUG_PANEL = True
 # Enables or disables verbose console prints (detect models, signs, etc.)
 # Useful for troubleshooting camera recognition.
 DEBUG_PRINT = False
-
-# ==============================
-# ADAS MONITORING (Sensor Display Panel)
-# ==============================
-
-# Enables or disables the ADAS monitoring panel overlay on camera.
-# Shows steering angle, GPS speed, GPS coordinates, Gyro values.
-# Toggle at runtime with key A (ADAS mode).
-ADAS_MONITORING = True
-
-# Sensors to display on the ADAS panel. Add/remove sensor names as needed.
-# Supported sensors: "steering", "gps_speed", "gps_coords", "gyro"
-ADAS_SENSORS = ["steering", "gps_speed", "gps_coords", "gyro"]
 
 # ==============================
 # LIDAR OBSTACLE DETECTION CONFIG
@@ -957,76 +940,12 @@ def process_lidar_data(lidar):
     return True, obstacle_angle, min_distance
 
 # ==============================
-# ADAS MONITORING PANEL
-# ==============================
-
-def update_adas_panel(adas_display, gps, gyro, steering_wheel, ADAS_SENSORS):
-    """
-    Read sensor data and update the ADAS monitoring panel.
-    Displays steering angle, GPS speed, GPS coordinates, and Gyro values.
-    """
-    if not adas_display or not ADAS_SENSORS:
-        return
-
-    lines = []
-
-    # Header
-    lines.append("=" * 40)
-    lines.append("ADAS MONITORING PANEL")
-    lines.append("=" * 40)
-
-    # Steering Wheel
-    if "steering" in ADAS_SENSORS and steering_wheel:
-        try:
-            angle = steering_wheel.getAngle()
-            lines.append(f"Steering Angle: {angle:.1f}°")
-        except:
-            lines.append("Steering Angle: N/A")
-
-    # GPS Speed
-    if "gps_speed" in ADAS_SENSORS and gps:
-        try:
-            speed = gps.getSpeed()
-            lines.append(f"GPS Speed: {speed:.2f} m/s")
-        except:
-            lines.append("GPS Speed: N/A")
-
-    # GPS Coordinates
-    if "gps_coords" in ADAS_SENSORS and gps:
-        try:
-            coords = gps.getValues()
-            lines.append(f"GPS X: {coords[0]:.3f} m")
-            lines.append(f"GPS Y: {coords[1]:.3f} m")
-            lines.append(f"GPS Z: {coords[2]:.3f} m")
-        except:
-            lines.append("GPS Coordinates: N/A")
-
-    # Gyro
-    if "gyro" in ADAS_SENSORS and gyro:
-        try:
-            gyro_values = gyro.getValues()
-            lines.append(f"Gyro X: {gyro_values[0]:.4f} rad/s")
-            lines.append(f"Gyro Y: {gyro_values[1]:.4f} rad/s")
-            lines.append(f"Gyro Z: {gyro_values[2]:.4f} rad/s")
-        except:
-            lines.append("Gyro: N/A")
-
-    # Draw lines on the display
-    lines.append("=" * 40)
-    y_offset = 20
-    for line in lines:
-        # Convert text to image and place it
-        temp_img = text_to_image(line, (0, 255, 0), 2)
-        display_image(temp_img, adas_display)
-        y_offset += 30
-
-
 # ==============================
 # MAIN CONTROLLER
 # ==============================
 
 def main():
-    global ADAS_MONITORING
+    global DEBUG_PANEL
     speed = 0
     angle = 0.0
     previous_angle = 0.0   # seed value for the steering smoothing
@@ -1069,13 +988,10 @@ def main():
     display_img = Display("display_image")
 
     # ==============================
-    # ADAS MONITORING DEVICE INITIALIZATION
+    # SENSOR INITIALIZATION (GPS + Gyro)
     # ==============================
     gps = robot.getDevice("gps")
     gyro = robot.getDevice("gyro")
-
-    # Steering wheel: Webots node name is "steeringWheel" (not the display name field)
-    steering_wheel = robot.getDevice("steeringWheel")
 
     if gps:
         gps.enable(timestep)
@@ -1089,19 +1005,8 @@ def main():
     else:
         print("WARNING: Gyro device not found.")
 
-    if steering_wheel:
-        steering_wheel.enable(timestep)
-        print("Steering Wheel enabled.")
-    else:
-        print("WARNING: Steering Wheel device not found.")
-
     keyboard = Keyboard()
     keyboard.enable(timestep)
-
-    # ADAS display panel (separate from camera display)
-    adas_display = Display("adas_monitor") if ADAS_MONITORING else None
-    if adas_display:
-        print("ADAS Monitoring panel enabled.")
 
     joystick = init_ps_controller()
 
@@ -1196,10 +1101,10 @@ def main():
                 elif key == keyboard.LEFT:
                     angle = max(angle - ANGLE_INCR, -MAX_ANGLE)
 
-                elif key == ord("A"):
+                elif key in (ord("C"), ord("c")):
                     current_datetime = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
                     file_name = current_datetime + ".png"
-                    camera.saveImage(os.path.join(os.getcwd(), file_name), 1)
+                    camera.saveImage(os.getcwd() + "/" + file_name, 1)
                     print("Image taken")
 
                 elif key == ord("S"):
@@ -1215,17 +1120,8 @@ def main():
                 elif key in (ord("P"), ord("p")):
                     DEBUG_PANEL = not DEBUG_PANEL
                     print(f"Debug Panel: {'ON' if DEBUG_PANEL else 'OFF'}")
-
-                elif key in (ord("A"), ord("a")):
-                    # Toggle ADAS Monitoring (only if enabled in config)
-                    if ADAS_SENSORS:
-                        ADAS_MONITORING = not ADAS_MONITORING
-                        if ADAS_MONITORING:
-                            adas_display = Display("adas_monitor")
-                            print("ADAS Monitoring: ON")
-                        else:
-                            adas_display = None
-                            print("ADAS Monitoring: OFF")
+                    line_lost_time = None
+                    print(f"Autonomous mode: {autonomous_mode}")
 
         # ==============================
         # PS4 CONTROLLER MANUAL MODE
@@ -1720,13 +1616,6 @@ def main():
 
         pid_chart.update(error, angle, speed)
         pid_chart.show()
-
-        # ==============================
-        # ADAS MONITORING PANEL UPDATE
-        # ==============================
-        # Read sensors and update ADAS display panel (if enabled)
-        if ADAS_MONITORING and adas_display is not None:
-            update_adas_panel(adas_display, gps, gyro, steering_wheel, ADAS_SENSORS)
 
         # Display image in Webots display
         if DEBUG_PANEL:
