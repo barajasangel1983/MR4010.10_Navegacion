@@ -150,6 +150,14 @@ ENABLE_OBJECT_DETECTION = True
 DEBUG_PANEL = True
 
 # ==============================
+# DEBUG PRINT (Console)
+# ==============================
+
+# Enables or disables verbose console prints (detect models, signs, etc.)
+# Useful for troubleshooting camera recognition.
+DEBUG_PRINT = False
+
+# ==============================
 # LIDAR OBSTACLE DETECTION CONFIG
 # ==============================
 
@@ -1200,19 +1208,20 @@ def main():
             objects = camera.getRecognitionObjects()
             for obj in objects:
                 model = obj.getModel()
-                # Debug: check category matching for each model
-                if any(c in model for c in CATEGORIES["sign"]):
-                    print(f"[SIGN MATCH] '{model}'")
-                else:
-                    # Check each sign category individually
-                    for sign_cat in CATEGORIES["sign"]:
-                        if sign_cat in model:
-                            print(f"[SIGN FOUND IN MODEL] model='{model}' with '{sign_cat}'")
-                            break
+                if DEBUG_PRINT:
+                    # Debug: check category matching for each model
+                    if any(c in model for c in CATEGORIES["sign"]):
+                        print(f"[SIGN MATCH] '{model}'")
                     else:
-                        print(f"[SIGN NO MATCH] model='{model}' (len={len(model)})")
-                if any(c in model for c in CATEGORIES["vehicle"]):
-                    print(f"[VEHICLE MATCH] {model}")
+                        # Check each sign category individually
+                        for sign_cat in CATEGORIES["sign"]:
+                            if sign_cat in model:
+                                print(f"[SIGN FOUND IN MODEL] model='{model}' with '{sign_cat}'")
+                                break
+                        else:
+                            print(f"[SIGN NO MATCH] model='{model}' (len={len(model)})")
+                    if any(c in model for c in CATEGORIES["vehicle"]):
+                        print(f"[VEHICLE MATCH] {model}")
             
             for obj in objects:
                 model = obj.getModel()
