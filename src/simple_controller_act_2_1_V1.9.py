@@ -30,7 +30,7 @@
 #   - DEBUG_PRINT flag enables per-frame model name logging to console.
 #
 # SENSORS  (GPS + Gyro + Distance Sensors)
-#   - GPS, Gyro, DS_ML, DS_MR enabled at startup; each skipped gracefully if not found.
+#   - GPS, Gyro, DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR enabled at startup; each skipped gracefully if not found.
 #   - Values read every frame and forwarded to the ADAS Monitor.
 #
 # ADAS MONITOR  (draw_adas_monitor)
@@ -38,7 +38,7 @@
 #   - Displays: Speed, Angle, Brake (VEHICLE STATE section).
 #   - Displays: GPS X/Y/Z in metres (GPS section).
 #   - Displays: Gyro ωX/ωY/ωZ in rad/s (GYRO section).
-#   - Displays: DS_ML and DS_MR live values with color coding
+#   - Displays: DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR live values with color coding
 #     (green > 1000, orange 500–1000, red < 500).
 #   - Reserved rows for FL/FC/FR/RL/RR distance sensors and LiDAR.
 #
@@ -439,8 +439,8 @@ class PIDDebugChart:
 # ADAS MONITOR
 # ==============================
 
-def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val):
-    W, H = 400, 530
+def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val, ds_fl_val, ds_fr_val, ds_rl_val, ds_rr_val):
+    W, H = 400, 650
     panel = np.zeros((H, W, 3), dtype=np.uint8)
 
     def section_header(y, title):
@@ -497,9 +497,16 @@ def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr
     section_header(342, "DISTANCE SENSORS")
     ml_str = f"{ds_ml_val:.1f}" if ds_ml_val is not None else "--"
     mr_str = f"{ds_mr_val:.1f}" if ds_mr_val is not None else "--"
+    fl_str = f"{ds_fl_val:.1f}" if ds_fl_val is not None else "--"
+    fr_str = f"{ds_fr_val:.1f}" if ds_fr_val is not None else "--"
+    rl_str = f"{ds_rl_val:.1f}" if ds_rl_val is not None else "--"
+    rr_str = f"{ds_rr_val:.1f}" if ds_rr_val is not None else "--"
     data_row(364, "DS_ML  (mid-left)",  ml_str, ds_color(ds_ml_val))
     data_row(387, "DS_MR  (mid-right)", mr_str, ds_color(ds_mr_val))
-    reserved_row(410, "FL: --   FC: --   FR: --   RL: --   RR: --")
+    data_row(410, "DS_FL  (front-left)",  fl_str, ds_color(ds_fl_val))
+    data_row(433, "DS_FR  (front-right)", fr_str, ds_color(ds_fr_val))
+    data_row(456, "DS_RL  (rear-left)",   rl_str, ds_color(ds_rl_val))
+    data_row(479, "DS_RR  (rear-right)",  rr_str, ds_color(ds_rr_val))
 
     # ── LIDAR (reserved) ──────────────────────────────
     section_header(438, "LIDAR")
@@ -823,6 +830,10 @@ def main():
     gyro = robot.getDevice("gyro")
     ds_ml = robot.getDevice("DS_ML")
     ds_mr = robot.getDevice("DS_MR")
+    ds_fl = robot.getDevice("DS_FL")
+    ds_fr = robot.getDevice("DS_FR")
+    ds_rl = robot.getDevice("DS_RL")
+    ds_rr = robot.getDevice("DS_RR")
 
     if gps:
         gps.enable(timestep)
@@ -847,6 +858,30 @@ def main():
         print("Distance sensor DS_MR enabled.")
     else:
         print("WARNING: DS_MR device not found.")
+
+    if ds_fl:
+        ds_fl.enable(timestep)
+        print("Distance sensor DS_FL enabled.")
+    else:
+        print("WARNING: DS_FL device not found.")
+
+    if ds_fr:
+        ds_fr.enable(timestep)
+        print("Distance sensor DS_FR enabled.")
+    else:
+        print("WARNING: DS_FR device not found.")
+
+    if ds_rl:
+        ds_rl.enable(timestep)
+        print("Distance sensor DS_RL enabled.")
+    else:
+        print("WARNING: DS_RL device not found.")
+
+    if ds_rr:
+        ds_rr.enable(timestep)
+        print("Distance sensor DS_RR enabled.")
+    else:
+        print("WARNING: DS_RR device not found.")
 
     keyboard = Keyboard()
     keyboard.enable(timestep)
@@ -896,6 +931,10 @@ def main():
         gyro_vals = gyro.getValues() if gyro else None
         ds_ml_val = ds_ml.getValue() if ds_ml else None
         ds_mr_val = ds_mr.getValue() if ds_mr else None
+        ds_fl_val = ds_fl.getValue() if ds_fl else None
+        ds_fr_val = ds_fr.getValue() if ds_fr else None
+        ds_rl_val = ds_rl.getValue() if ds_rl else None
+        ds_rr_val = ds_rr.getValue() if ds_rr else None
 
         # ==============================
         # DATASET MODE CAPTURE
@@ -1449,7 +1488,7 @@ def main():
         # ADAS MONITOR
         # ==============================
         if ADAS_MONITOR_ENABLED:
-            draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val)
+            draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val, ds_fl_val, ds_fr_val, ds_rl_val, ds_rr_val)
 
         # Display image in Webots display
         if DEBUG_PANEL:
