@@ -42,9 +42,11 @@
 #     (green > 1000, orange 500–1000, red < 500).
 #   - Reserved rows for FL/FC/FR/RL/RR distance sensors and LiDAR.
 #
-# DATASET CAPTURE  (dataset_mode_v2)
+# DATASET CAPTURE  (dataset_mode_v3 — Behavioral Cloning)
 #   - Toggle with keyboard D or PS4 Triangle.
-#   - Frame counter and mode overlay drawn on debug display.
+#   - Captures (image, angle, speed, brake) at 2 Hz.
+#   - Images → data/behavioral_dataset/images/frame_XXXXXX.jpg
+#   - Metadata → data/behavioral_dataset/measurements.csv
 #
 # INPUT / CONTROL
 #   - Keyboard: arrows (speed/angle), S (autonomous), A (ADAS monitor),
@@ -74,7 +76,7 @@ import pygame
 from collections import deque
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import dataset_mode_v2 as dataset_mode
+import dataset_mode_v3 as dataset_mode
 
 
 # ==============================
@@ -898,7 +900,10 @@ def main():
         # ==============================
         # DATASET MODE CAPTURE
         # ==============================
-        ds_counter, ds_overlay = dataset_mode.try_capture(frame, current_time)
+        # DATASET MODE — BEHAVIORAL CLONING (v3)
+        ds_counter, ds_overlay = dataset_mode.try_capture(
+            frame, angle, speed, brake, current_time
+        )
         if ds_overlay is not None:
             display_frame = ds_overlay
 
