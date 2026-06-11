@@ -15,30 +15,40 @@
 #     then revert automatically to MANUAL mode.
 #
 # LIDAR OBSTACLE DETECTION  (Sick LMS 291)
-#   - Front-center 30° inspection window.
+#   - Front-center 40° inspection window (±20 samples from center).
 #   - Max detection range: 25 m; emergency-stop threshold: 15 m.
 #   - Between 15–25 m: slow to 50 % speed, lane following stays active.
 #   - Below 15 m: full brake, zero steering, classify obstacle type.
 #
-# CAMERA RECOGNITION (built-in neural network)
-#   - Uses Webots' built-in object recognition (zero training required).
-#   - Recognizes objects: BmwX5, TrafficCone, Barrel, Pedestrian, etc.
-#   - Runs every frame via camera.recognitionEnable(timestep).
-#   - Color-coded bounding boxes: red=vehicle, blue=obstacle, green=other.
-#   - Obstacle classification: VEHICLE/OBSTACLE → emergency stop with hazard lights.
-#   - Camera recognition data provides distance, position, and model type.
+# CAMERA RECOGNITION  (Webots built-in neural network)
+#   - camera.recognitionEnable() — no training required.
+#   - Filtered categories: vehicle (bus), traffic_light, sign (caution/order/speed/yield/highway),
+#     obstacle (traffic cone, barrel, crash barrier). Buildings/trees/road ignored.
+#   - Color-coded boxes: red=vehicle, yellow=traffic light, cyan=sign, blue=obstacle.
+#   - Obstacle classification at < 15 m: VEHICLE → hazard+stop, OBSTACLE → hazard+stop,
+#     other recognized → stop (no hazard), no recognition → LIDAR_ONLY stop.
+#   - DEBUG_PRINT flag enables per-frame model name logging to console.
+#
+# SENSORS  (GPS + Gyro + Distance Sensors)
+#   - GPS, Gyro, DS_ML, DS_MR enabled at startup; each skipped gracefully if not found.
+#   - Values read every frame and forwarded to the ADAS Monitor.
+#
+# ADAS MONITOR  (draw_adas_monitor)
+#   - Separate OpenCV window "ADAS Monitor" toggled with key A.
+#   - Displays: Speed, Angle, Brake (VEHICLE STATE section).
+#   - Displays: GPS X/Y/Z in metres (GPS section).
+#   - Displays: Gyro ωX/ωY/ωZ in rad/s (GYRO section).
+#   - Displays: DS_ML and DS_MR live values with color coding
+#     (green > 1000, orange 500–1000, red < 500).
+#   - Reserved rows for FL/FC/FR/RL/RR distance sensors and LiDAR.
 #
 # DATASET CAPTURE  (dataset_mode_v2)
 #   - Toggle with keyboard D or PS4 Triangle.
 #   - Frame counter and mode overlay drawn on debug display.
 #
-# DEBUG PANEL
-#   - Displays real-time debug information on camera feed.
-#   - Toggle at runtime with key P (Debug Panel mode).
-#
 # INPUT / CONTROL
-#   - Keyboard: arrows (speed/angle), C (capture image), S (toggle autonomous),
-#     D (dataset mode), P (debug panel), Q (quit).
+#   - Keyboard: arrows (speed/angle), S (autonomous), A (ADAS monitor),
+#     C (capture image), D (dataset mode), P (debug panel), Q (quit).
 #   - PS4 controller: left stick (steering), R2 (throttle), L2 (brake/reverse),
 #     X (toggle autonomous), Square (save image), Triangle (dataset mode).
 #   - Debounce: 0.1 s keyboard, 0.5 s PS4 buttons.
@@ -47,7 +57,10 @@
 #   - "Self Driving Debug": annotated camera view with line, lane center, HUD.
 #   - "Yellow Mask Debug": binary ROI mask used for line detection.
 #   - "PID Response Chart": live error (px), steering (rad), and speed (km/h) traces.
+#   - "ADAS Monitor": sensor dashboard (speed, angle, brake, GPS, gyro + reserved slots).
 #   - Speed overlay color: cyan = autonomous, green = manual.
+#   - DEBUG_PANEL (key P) gates the Self Driving Debug and Yellow Mask windows.
+#   - ADAS_MONITOR_ENABLED (key A) gates the ADAS Monitor window independently.
 # ============================================================
 
 from controller import Display, Keyboard, Lidar
@@ -58,8 +71,6 @@ from datetime import datetime
 import os
 import time
 import pygame
-import pickle
-from skimage.feature import hog
 from collections import deque
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -70,14 +81,6 @@ import dataset_mode_v2 as dataset_mode
 # MOVING AVERAGE LINEX FROM PREVIOUS FRAMES
 # ==============================
 line_x_history = deque(maxlen=10)
-
-
-# ==============================
-# SVM MODELS
-# ==============================
-
-VEHICLE_MODEL_PATH = r"D:\ML\Projects\Project_5_MR4010.10_Navegacion\MR4010.10_Navegacion\models\vehicle_svm_hog.pkl"
-PEDESTRIAN_MODEL_PATH = r"D:\ML\Projects\Project_5_MR4010.10_Navegacion\MR4010.10_Navegacion\models\pedestrian_svm_hog.pkl"
 
 
 # ==============================
@@ -112,14 +115,8 @@ alpha_smooth = 0.25
 
 # PS4 button map
 BTN_X = 0
-BTN_CIRCLE = 1
 BTN_TRIANGLE = 2
 BTN_SQUARE = 3
-BTN_L1 = 4
-BTN_R1 = 5
-BTN_SHARE = 8
-BTN_OPTIONS = 9
-BTN_PS = 10
 
 #Virtual Lane
 LANE_OFFSET_PX = 110
@@ -132,12 +129,6 @@ MAX_LINE_JUMP_PX = 100
 
 #Line MAx SLOPE allowed for detection
 MAX_SLOPE=0.15
-
-#CAMERA SETTINGS
-PEDESTRIAN_IMG_SIZE = (18, 36)  # OpenCV resize usa (width, height)
-CAMERA_WIDTH = 620
-CAMERA_HEIGHT = 320
-
 
 # ==============================
 # OBJECT DETECTION CONFIG — Camera Recognition (built-in)
@@ -163,6 +154,14 @@ DEBUG_PANEL = True
 DEBUG_PRINT = False
 
 # ==============================
+# ADAS MONITOR
+# ==============================
+
+# Enables or disables the ADAS Monitor overlay window.
+# Toggle at runtime with key A.
+ADAS_MONITOR_ENABLED = True
+
+# ==============================
 # LIDAR OBSTACLE DETECTION CONFIG
 # ==============================
 
@@ -172,10 +171,6 @@ ENABLE_LIDAR_OBSTACLE_DETECTION = True
 # Maximum detection distance required by the assignment.
 # Any obstacle farther than this value will be ignored.
 LIDAR_MAX_DISTANCE = 25.0  # meters
-
-# Front-center LiDAR detection window.
-# Requirement says 20 or 30 degrees. Use 30 for a wider and safer zone.
-LIDAR_CENTER_FOV_DEG = 30
 
 # Distance threshold to stop the vehicle.
 # This is intentionally smaller than 20 m because 20 m is the detection limit,
@@ -295,16 +290,6 @@ def smooth_line(current_line, previous_line, alpha=0.25):
         int(alpha * current_line[3] + (1 - alpha) * previous_line[3])
     ]
 
-
-def make_line(height, slope, intercept):
-    # Project a y=mx+b line onto two fixed row heights to get drawable endpoints.
-    y1 = int(height * 0.95)
-    y2 = int(height * 0.75)
-
-    x1 = int((y1 - intercept) / slope)
-    x2 = int((y2 - intercept) / slope)
-
-    return [x1, y1, x2, y2]
 
 class PIDDebugChart:
     # [ADDED] error_range: half the camera pixel width used to scale the error
@@ -447,238 +432,82 @@ class PIDDebugChart:
 
         cv2.imshow("PID Response Chart", self._canvas)
 
-# Loading SVM Models
-def load_svm_model(path):
-    with open(path, "rb") as f:
-        return pickle.load(f)
-        
-#Vehicles detection
-def detect_objects_svm(frame,
-                       model,
-                       roi_y_start=0.35,
-                       window_size=(64, 64),
-                       step=32):
 
-    height, width, _ = frame.shape
+# ==============================
+# ADAS MONITOR
+# ==============================
 
-    detections = []
+def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val):
+    W, H = 400, 530
+    panel = np.zeros((H, W, 3), dtype=np.uint8)
 
-    win_w = window_size[0]
-    win_h = window_size[1]
+    def section_header(y, title):
+        cv2.putText(panel, title, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 200), 1)
+        cv2.line(panel, (8, y + 6), (W - 8, y + 6), (50, 50, 50), 1)
 
-    y_start = int(height * roi_y_start)
-    #defining mask for inspection
-    x_start = int(width * 0.15)
-    x_end = int(width * 0.85)
+    def data_row(y, label, value, val_color=(210, 210, 210)):
+        cv2.putText(panel, label, (18, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (130, 130, 130), 1)
+        cv2.putText(panel, value, (175, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, val_color, 1)
 
-    for y in range(y_start, height - win_h, step):
+    def reserved_row(y, label):
+        cv2.putText(panel, label, (18, y), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (55, 55, 55), 1)
 
-        for x in range(x_start, x_end - win_w, step):
+    def ds_color(val):
+        if val is None:
+            return (55, 55, 55)
+        if val < 500:
+            return (0, 0, 255)    # red — close
+        if val < 1000:
+            return (0, 165, 255)  # orange — approaching
+        return (0, 255, 0)        # green — clear
 
-            crop = frame[y:y + win_h, x:x + win_w]
+    # Title
+    cv2.putText(panel, "ADAS  MONITOR", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.line(panel, (8, 32), (W - 8, 32), (80, 80, 80), 1)
 
-            crop = cv2.resize(crop, window_size)
+    # ── VEHICLE STATE ─────────────────────────────────
+    section_header(54, "VEHICLE STATE")
+    spd_color = (0, 255, 0) if speed < 60 else (0, 165, 255)
+    brk_color = (0, 0, 255) if brake > 0.1 else (210, 210, 210)
+    data_row(76,  "Speed",  f"{speed:.1f}  km/h", spd_color)
+    data_row(99,  "Angle",  f"{angle:.4f}  rad")
+    data_row(122, "Brake",  f"{brake:.2f}", brk_color)
 
-            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # ── GPS ───────────────────────────────────────────
+    section_header(150, "GPS")
+    if gps_vals is not None:
+        data_row(172, "X", f"{gps_vals[0]:.3f}  m")
+        data_row(195, "Y", f"{gps_vals[1]:.3f}  m")
+        data_row(218, "Z", f"{gps_vals[2]:.3f}  m")
+    else:
+        data_row(182, "Status", "NOT AVAILABLE", (0, 80, 255))
 
-            features = hog(
-                gray,
-                orientations=11,
-                pixels_per_cell=(16, 16),
-                cells_per_block=(2, 2),
-                transform_sqrt=False,
-                visualize=False,
-                feature_vector=True
-            )
+    # ── GYRO ──────────────────────────────────────────
+    section_header(246, "GYRO")
+    if gyro_vals is not None:
+        data_row(268, "wX", f"{gyro_vals[0]:.4f}  rad/s")
+        data_row(291, "wY", f"{gyro_vals[1]:.4f}  rad/s")
+        data_row(314, "wZ", f"{gyro_vals[2]:.4f}  rad/s")
+    else:
+        data_row(278, "Status", "NOT AVAILABLE", (0, 80, 255))
 
-            features = features.reshape(1, -1)
+    # ── DISTANCE SENSORS ──────────────────────────────
+    section_header(342, "DISTANCE SENSORS")
+    ml_str = f"{ds_ml_val:.1f}" if ds_ml_val is not None else "--"
+    mr_str = f"{ds_mr_val:.1f}" if ds_mr_val is not None else "--"
+    data_row(364, "DS_ML  (mid-left)",  ml_str, ds_color(ds_ml_val))
+    data_row(387, "DS_MR  (mid-right)", mr_str, ds_color(ds_mr_val))
+    reserved_row(410, "FL: --   FC: --   FR: --   RL: --   RR: --")
 
-            pred = model.predict(features)[0]
+    # ── LIDAR (reserved) ──────────────────────────────
+    section_header(438, "LIDAR")
+    reserved_row(460, "[ reserved — front distance, angle ]")
 
-            if pred == 1:
-                detections.append((x, y, win_w, win_h))
+    # Bottom border
+    cv2.line(panel, (8, H - 8), (W - 8, H - 8), (50, 50, 50), 1)
 
-    return detections
+    cv2.imshow("ADAS Monitor", panel)
 
-
-
-# HOG feature extraction for pedestrians — matches training-time parameters exactly
-def extract_pedestrian_hog_features(img):
-    img = cv2.resize(img, PEDESTRIAN_IMG_SIZE)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    features = hog(
-        gray,
-        orientations=9,
-        pixels_per_cell=(4, 4),
-        cells_per_block=(2, 2),
-        transform_sqrt=True,
-        visualize=False,
-        feature_vector=True
-    )
-
-    return features.reshape(1, -1)
-
-# NMS — Non-Maximum Suppression: eliminates overlapping detection boxes by score
-def non_max_suppression(boxes, scores, overlap_thresh=0.25):
-    if len(boxes) == 0:
-        return []
-
-    boxes = np.array(boxes).astype(float)
-    scores = np.array(scores)
-
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 0] + boxes[:, 2]
-    y2 = boxes[:, 1] + boxes[:, 3]
-
-    area = (x2 - x1 + 1) * (y2 - y1 + 1)
-    idxs = np.argsort(scores)
-
-    pick = []
-
-    while len(idxs) > 0:
-        last = idxs[-1]
-        pick.append(last)
-
-        xx1 = np.maximum(x1[last], x1[idxs[:-1]])
-        yy1 = np.maximum(y1[last], y1[idxs[:-1]])
-        xx2 = np.minimum(x2[last], x2[idxs[:-1]])
-        yy2 = np.minimum(y2[last], y2[idxs[:-1]])
-
-        w = np.maximum(0, xx2 - xx1 + 1)
-        h = np.maximum(0, yy2 - yy1 + 1)
-
-        overlap = (w * h) / area[idxs[:-1]]
-
-        idxs = np.delete(
-            idxs,
-            np.concatenate((
-                [len(idxs) - 1],
-                np.where(overlap > overlap_thresh)[0]
-            ))
-        )
-
-    return boxes[pick].astype(int).tolist()
-
-# HOG sliding-window detection for pedestrians
-def detect_pedestrians_svm(frame, pedestrian_model):
-    height, width, _ = frame.shape
-
-    boxes = []
-    scores = []
-
-    model_w = 18
-    model_h = 36
-
-    #pedestrian_sizes = [
-    #    (30, 60),
-    #    (33, 66),
-    #    (36, 72)
-    #]
-    pedestrian_sizes = [
-        (30, 65),
-        (45, 80),
-        (60, 95)
-    ]
-
-    confidence_threshold = 0.4
-    yellow_ratio_limit = 0.10
-    edge_density_min = 0.08
-    step = 48
-
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    y_start = int(height * 0.3)
-    y_end = int(height * 0.9)
-
-    x_start = int(width * 0.25)
-    x_end = int(width * 0.75)
-
-    for win_w, win_h in pedestrian_sizes:
-
-        for y in range(y_start, y_end - win_h, step):
-            for x in range(x_start, x_end - win_w, step):
-
-                candidate = gray[y:y + win_h, x:x + win_w]
-                candidate_bgr = frame[y:y + win_h, x:x + win_w]
-
-                # ==============================
-                # YELLOW ROAD MARKING FILTER
-                # ==============================
-
-                hsv = cv2.cvtColor(candidate_bgr, cv2.COLOR_BGR2HSV)
-
-                yellow_mask = cv2.inRange(
-                    hsv,
-                    np.array([20, 80, 80]),
-                    np.array([40, 255, 255])
-                )
-
-                yellow_ratio = np.sum(yellow_mask > 0) / (win_w * win_h)
-
-                if yellow_ratio > yellow_ratio_limit:
-                    continue
-
-                # ==============================
-                # VERTICAL POSITION FILTER
-                # ==============================
-
-                box_center_y = y + win_h / 2
-
-                if box_center_y < height * 0.35:
-                    continue
-
-                if box_center_y > height * 0.88:
-                    continue
-
-                # ==============================
-                # RESIZE TO TRAINING SIZE
-                # ==============================
-
-                candidate_resized = cv2.resize(
-                    candidate,
-                    (model_w, model_h)
-                )
-
-                # ==============================
-                # EDGE DENSITY FILTER
-                # ==============================
-
-                edges = cv2.Canny(candidate_resized, 50, 150)
-
-                edge_density = np.sum(edges > 0) / (model_w * model_h)
-
-                if edge_density < edge_density_min:
-                    continue
-
-                # ==============================
-                # HOG FEATURES
-                # ==============================
-
-                features = hog(
-                    candidate_resized,
-                    orientations=9,
-                    pixels_per_cell=(4, 4),
-                    cells_per_block=(2, 2),
-                    transform_sqrt=True,
-                    visualize=False,
-                    feature_vector=True
-                ).reshape(1, -1)
-
-                score = pedestrian_model.decision_function(features)[0]
-
-                if score > confidence_threshold:
-                    boxes.append((x, y, win_w, win_h))
-                    scores.append(score)
-
-    final_boxes = non_max_suppression(
-        boxes,
-        scores,
-        overlap_thresh=0.25
-    )
-
-    return final_boxes
 
 # ==============================
 # YELLOW LINE DETECTION
@@ -773,7 +602,6 @@ def detect_yellow_line(frame):
     # Adjusting to close it to the car means a higher number, to improve turning. 
     y_ref = int(height * Y_REF_RATIO)
 
-    x_intersections = []
     valid_lines = []
     slopes = []
     intercepts = []
@@ -940,12 +768,11 @@ def process_lidar_data(lidar):
     return True, obstacle_angle, min_distance
 
 # ==============================
-# ==============================
 # MAIN CONTROLLER
 # ==============================
 
 def main():
-    global DEBUG_PANEL
+    global DEBUG_PANEL, ADAS_MONITOR_ENABLED
     speed = 0
     angle = 0.0
     previous_angle = 0.0   # seed value for the steering smoothing
@@ -988,10 +815,12 @@ def main():
     display_img = Display("display_image")
 
     # ==============================
-    # SENSOR INITIALIZATION (GPS + Gyro)
+    # SENSOR INITIALIZATION (GPS + Gyro + Distance Sensors)
     # ==============================
     gps = robot.getDevice("gps")
     gyro = robot.getDevice("gyro")
+    ds_ml = robot.getDevice("DS_ML")
+    ds_mr = robot.getDevice("DS_MR")
 
     if gps:
         gps.enable(timestep)
@@ -1004,6 +833,18 @@ def main():
         print("Gyro enabled.")
     else:
         print("WARNING: Gyro device not found.")
+
+    if ds_ml:
+        ds_ml.enable(timestep)
+        print("Distance sensor DS_ML enabled.")
+    else:
+        print("WARNING: DS_ML device not found.")
+
+    if ds_mr:
+        ds_mr.enable(timestep)
+        print("Distance sensor DS_MR enabled.")
+    else:
+        print("WARNING: DS_MR device not found.")
 
     keyboard = Keyboard()
     keyboard.enable(timestep)
@@ -1022,20 +863,7 @@ def main():
     # scene. Previously hardcoded to 320 (half of 640).
     pid_chart = PIDDebugChart(error_range=camera.getWidth() // 2)
 
-    # Loading models SVM Models for vision
-    vehicle_model = load_svm_model(VEHICLE_MODEL_PATH)
-    pedestrian_model = load_svm_model(PEDESTRIAN_MODEL_PATH)    
-
-
-
-    # This is for the SVM pedestrian time control
     previous_time = time.time()
-    frame_count = 0
-    last_detection_time = 0
-
-    vehicle_boxes = []
-    pedestrian_boxes = []
-
 
     print("Controller ready.")
     print("Keyboard S = toggle autonomous mode")
@@ -1058,19 +886,14 @@ def main():
         previous_time = current_time
 
         frame = get_image(camera)
-        frame_count += 1
 
-        # --- PRINT RECOGNIZED OBJECTS (for mapping) ---
-        #num_obj = camera.getRecognitionNumberOfObjects()
-        #if num_obj > 0:
-            #for i in range(num_obj):
-                #obj = camera.getRecognitionObjects()[i]
-                #obj_id = obj.getId()
-                #pos = obj.getPosition()
-                #print(f"[RECOG] #{i} | id={obj_id} | pos=({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
-
-
-
+        # ==============================
+        # SENSOR READS — GPS + GYRO + DISTANCE SENSORS
+        # ==============================
+        gps_vals  = gps.getValues()  if gps  else None
+        gyro_vals = gyro.getValues() if gyro else None
+        ds_ml_val = ds_ml.getValue() if ds_ml else None
+        ds_mr_val = ds_mr.getValue() if ds_mr else None
 
         # ==============================
         # DATASET MODE CAPTURE
@@ -1104,7 +927,7 @@ def main():
                 elif key in (ord("C"), ord("c")):
                     current_datetime = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
                     file_name = current_datetime + ".png"
-                    camera.saveImage(os.getcwd() + "/" + file_name, 1)
+                    camera.saveImage(os.path.join(os.getcwd(), file_name), 1)
                     print("Image taken")
 
                 elif key == ord("S"):
@@ -1117,11 +940,15 @@ def main():
                 elif key in (ord("D"), ord("d")):
                     dataset_mode.toggle_dataset()
 
+                elif key in (ord("A"), ord("a")):
+                    ADAS_MONITOR_ENABLED = not ADAS_MONITOR_ENABLED
+                    if not ADAS_MONITOR_ENABLED:
+                        cv2.destroyWindow("ADAS Monitor")
+                    print(f"ADAS Monitor: {'ON' if ADAS_MONITOR_ENABLED else 'OFF'}")
+
                 elif key in (ord("P"), ord("p")):
                     DEBUG_PANEL = not DEBUG_PANEL
                     print(f"Debug Panel: {'ON' if DEBUG_PANEL else 'OFF'}")
-                    line_lost_time = None
-                    print(f"Autonomous mode: {autonomous_mode}")
 
         # ==============================
         # PS4 CONTROLLER MANUAL MODE
@@ -1218,9 +1045,7 @@ def main():
         # ==========================================
         
         recognized_objects = []
-        vehicle_boxes = []
-        obstacle_boxes = []
-        
+
         # Object categories for color coding
         COLOR_VEHICLE = (0, 0, 255)       # Red — vehicles (bus, car)
         COLOR_TRAFFIC_LIGHT = (0, 255, 255)  # Yellow
@@ -1280,7 +1105,6 @@ def main():
                         continue  # Skip our own car
                     obj_type = "vehicle"
                     color = COLOR_VEHICLE
-                    vehicle_boxes.append({"distance": distance, "pos": (x, y, w, h)})
                 elif any(c in model for c in CATEGORIES["traffic_light"]):
                     obj_type = "traffic_light"
                     color = COLOR_TRAFFIC_LIGHT
@@ -1295,7 +1119,6 @@ def main():
                 elif any(c in model for c in CATEGORIES["obstacle"]):
                     obj_type = "obstacle"
                     color = COLOR_OBSTACLE
-                    obstacle_boxes.append({"distance": distance, "type": model})
                 else:
                     continue  # Skip buildings, trees, etc.
                 
@@ -1616,6 +1439,12 @@ def main():
 
         pid_chart.update(error, angle, speed)
         pid_chart.show()
+
+        # ==============================
+        # ADAS MONITOR
+        # ==============================
+        if ADAS_MONITOR_ENABLED:
+            draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val)
 
         # Display image in Webots display
         if DEBUG_PANEL:
