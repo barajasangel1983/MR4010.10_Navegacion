@@ -1,5 +1,5 @@
 # ============================================================
-# V1.9 — Webots Self-Driving Controller
+# V1.9.10 — Webots Self-Driving Controller
 # ============================================================
 #
 # LANE FOLLOWING
@@ -15,7 +15,7 @@
 #     then revert automatically to MANUAL mode.
 #
 # LIDAR OBSTACLE DETECTION  (Sick LMS 291)
-#   - Front-center 40° inspection window (±20 samples from center).
+#   - Front-center 30° inspection window.
 #   - Max detection range: 25 m; emergency-stop threshold: 15 m.
 #   - Between 15–25 m: slow to 50 % speed, lane following stays active.
 #   - Below 15 m: full brake, zero steering, classify obstacle type.
@@ -32,8 +32,16 @@
 #   - Toggle with keyboard D or PS4 Triangle.
 #   - Frame counter and mode overlay drawn on debug display.
 #
+# ADAS MONITORING PANEL
+#   - Toggle with keyboard A (toggle ON/OFF at runtime).
+#   - Displays real-time sensor data on a separate Webots display window.
+#   - Sensors: Steering Wheel angle, GPS speed, GPS coordinates (X/Y/Z), Gyro (X/Y/Z rad/s).
+#   - Configurable which sensors to display via ADAS_SENSORS list.
+#   - Initialize GPS, Gyro, and Steering Wheel devices in controller setup.
+#
 # INPUT / CONTROL
-#   - Keyboard: arrows (speed/angle), S (toggle autonomous), A (save image), D (dataset).
+#   - Keyboard: arrows (speed/angle), S (toggle autonomous), A (toggle ADAS panel),
+#     D (dataset mode), P (debug panel), Q (quit).
 #   - PS4 controller: left stick (steering), R2 (throttle), L2 (brake/reverse),
 #     X (toggle autonomous), Square (save image), Triangle (dataset mode).
 #   - Debounce: 0.1 s keyboard, 0.5 s PS4 buttons.
@@ -42,6 +50,7 @@
 #   - "Self Driving Debug": annotated camera view with line, lane center, HUD.
 #   - "Yellow Mask Debug": binary ROI mask used for line detection.
 #   - "PID Response Chart": live error (px), steering (rad), and speed (km/h) traces.
+#   - "ADAS Monitor": dedicated panel for GPS, Gyro, Steering Wheel sensor values.
 #   - Speed overlay color: cyan = autonomous, green = manual.
 # ============================================================
 
@@ -1122,8 +1131,13 @@ def main():
 
     print("Controller ready.")
     print("Keyboard S = toggle autonomous mode")
+    print("Keyboard A = toggle ADAS monitoring panel")
+    print("Keyboard D = toggle dataset mode")
+    print("Keyboard P = toggle debug panel")
+    print("Keyboard Q = quit")
     print("PS4 X = toggle autonomous mode")
-    print("Square = save image")
+    print("PS4 Triangle = toggle dataset mode")
+    print("PS4 Square = save image")
 
     #Hazard lights control
     #
