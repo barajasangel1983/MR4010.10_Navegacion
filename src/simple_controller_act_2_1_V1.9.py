@@ -20,14 +20,13 @@
 #   - Between 15–25 m: slow to 50 % speed, lane following stays active.
 #   - Below 15 m: full brake, zero steering, classify obstacle type.
 #
-# SVM OBJECT DETECTION  (HOG features, run every 1 s to limit CPU load)
-#   - Vehicle detector: 64×64 sliding window over center 70 % width, step 64.
-#     Disabled by default (ENABLE_VEHICLE_DETECTION = False).
-#   - Pedestrian detector: multi-scale windows (30×65, 45×80, 60×95), step 48,
-#     with yellow-road-marking filter, vertical-position filter, edge-density
-#     filter, and NMS (IoU 0.25). Enabled by default.
-#   - Obstacle classification: PEDESTRIAN → normal stop (no hazard lights);
-#     BARREL/OBJECT → emergency stop + hazard flashers ON.
+# CAMERA RECOGNITION (built-in neural network)
+#   - Uses Webots' built-in object recognition (zero training required).
+#   - Recognizes objects: BmwX5, TrafficCone, Barrel, Pedestrian, etc.
+#   - Runs every frame via camera.recognitionEnable(timestep).
+#   - Color-coded bounding boxes: red=vehicle, blue=obstacle, green=other.
+#   - Obstacle classification: VEHICLE/OBSTACLE → emergency stop with hazard lights.
+#   - Camera recognition data provides distance, position, and model type.
 #
 # DATASET CAPTURE  (dataset_mode_v2)
 #   - Toggle with keyboard D or PS4 Triangle.
@@ -135,9 +134,12 @@ CAMERA_WIDTH = 620
 CAMERA_HEIGHT = 320
 
 
-# OBJECT DETECTION CONFIG
-ENABLE_VEHICLE_DETECTION = False
-ENABLE_PEDESTRIAN_DETECTION = True
+# ==============================
+# OBJECT DETECTION CONFIG — Camera Recognition (built-in)
+# ==============================
+# Replaces SVM-based detection. Uses Webots' built-in neural network.
+# Set to True to enable recognition overlay in the debug window.
+ENABLE_OBJECT_DETECTION = True
 
 # ==============================
 # LIDAR OBSTACLE DETECTION CONFIG
@@ -941,7 +943,7 @@ def main():
 
     camera = robot.getDevice("camera")
     camera.enable(timestep)
-    #camera.recognitionEnable(timestep)
+    camera.recognitionEnable(timestep)
 
     # ==============================
     # LIDAR INITIALIZATION
@@ -1159,57 +1161,44 @@ def main():
                 )
 
         # ==========================================
-        # RUN HEAVY SVM DETECTION ONLY EVERY 1 second
+        # CAMERA RECOGNITION (built-in neural network)
         # ==========================================
-
-        if current_time - last_detection_time > 1.0:
-
-            last_detection_time = current_time
-            
-            if ENABLE_VEHICLE_DETECTION:
+        
+        recognized_objects = []
+        vehicle_boxes = []
+        pedestrian_boxes = []
+        
+        num_obj = camera.getRecognitionNumberOfObjects()
+        if num_obj > 0 and ENABLE_OBJECT_DETECTION:
+            objects = camera.getRecognitionObjects()
+            for obj in objects:
+                model = obj.getModel()
+                pos_img = obj.getPositionOnImage()
+                size_img = obj.getSizeOnImage()
+                x, y = pos_img
+                w, h = size_img
                 
-                vehicle_boxes = detect_objects_svm(
-                    frame,
-                    vehicle_model,
-                    roi_y_start=0.35,
-                    window_size=(64, 64),
-                    step=64
-                )
-
-            if ENABLE_PEDESTRIAN_DETECTION:    
-        
-                pedestrian_boxes = detect_pedestrians_svm(
-                    frame,
-                    pedestrian_model
-                )
-
-        for x, y, w, h in vehicle_boxes:
-            cv2.rectangle(debug_frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            cv2.putText(debug_frame, "Vehicle", (x, y - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-
-        
-
-        for x, y, w, h in pedestrian_boxes:
-
-            cv2.rectangle(
-                debug_frame,
-                (x, y),
-                (x + w, y + h),
-                (255, 0, 0),
-                2
-            )
-
-            cv2.putText(
-                debug_frame,
-                "Pedestrian",
-                (x, y - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (255, 0, 0),
-                1
-            )   
+                # Distance from camera (z-axis)
+                obj_pos = obj.getPosition()
+                distance = obj_pos[2] if len(obj_pos) > 2 else 0
+                
+                # Color code by object type
+                if "Bmw" in model or "vehicle" in model.lower():
+                    color = (0, 0, 255)  # red
+                    vehicle_boxes.append((x, y, w, h))
+                    recognized_objects.append({"type": "vehicle", "distance": distance})
+                elif "Cone" in model or "barrel" in model.lower():
+                    color = (255, 0, 0)  # blue
+                    pedestrian_boxes.append((x, y, w, h))
+                    recognized_objects.append({"type": "obstacle", "distance": distance})
+                else:
+                    color = (0, 255, 0)  # green (others)
+                    recognized_objects.append({"type": model, "distance": distance})
+                
+                # Draw bounding box on debug frame
+                cv2.rectangle(debug_frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(debug_frame, model, (x, y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)   
 
         if line_detected:
 
@@ -1290,19 +1279,27 @@ def main():
                 brake = 0.0
 
                 if lidar_obstacle_distance < LIDAR_STOP_DISTANCE:
-                    pedestrian_detected = len(pedestrian_boxes) > 0
+                    # Classification based on camera recognition
+                    vehicle_detected = any(o["type"] == "vehicle" for o in recognized_objects)
+                    obstacle_detected = any(o["type"] == "obstacle" for o in recognized_objects)
 
                     speed = 0
                     angle = 0.0
                     previous_angle = 0.0
                     brake = 1.0
 
-                    if pedestrian_detected:
-                        hazard_lights_on = False
-                        obstacle_status = "PEDESTRIAN"
-                    else:
+                    if vehicle_detected:
                         hazard_lights_on = True
-                        obstacle_status = "BARREL"
+                        obstacle_status = "VEHICLE"
+                    elif obstacle_detected:
+                        hazard_lights_on = True
+                        obstacle_status = "OBSTACLE"
+                    elif recognized_objects:
+                        hazard_lights_on = False
+                        obstacle_status = recognized_objects[0]["type"].upper()
+                    else:
+                        hazard_lights_on = False
+                        obstacle_status = "LIDAR_ONLY"
 
                 else:
                     # Object detected between 15 m and 30 m:
