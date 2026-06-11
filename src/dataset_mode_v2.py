@@ -1,13 +1,62 @@
 # ============================================================
-# Dataset Mode Module — Simple Controller V1.7
-# Auto-capture camera frames + color/shape heuristic labeling
-# for YOLO-based traffic sign / traffic light detector training.
+# dataset_mode_v2 — Dataset Capture Module (V1.8 controller)
+# ============================================================
 #
-# Trigger: PS4 Triangle (btn 2) or Keyboard 'd' / 'D'
-# Output: data/webots_dataset/images/*.jpg + labels/*.txt
-
-
-
+# PURPOSE
+#   Auto-capture Webots camera frames at a fixed rate and produce
+#   YOLO-format bounding-box labels using color + shape heuristics.
+#   Intended for training a YOLO traffic sign / traffic light detector.
+#
+# TRIGGER
+#   PS4 Triangle (btn 2) or Keyboard 'D' / 'd' → toggle on/off.
+#   Programmatic: set_dataset_mode(True/False).
+#
+# OUTPUT
+#   data/webots_dataset/images/frame_XXXXXX.jpg
+#   data/webots_dataset/labels/frame_XXXXXX.txt  (YOLO: cls cx cy w h, normalized)
+#   Empty .txt = hard-negative sample (no objects detected, still useful for training).
+#
+# CAPTURE RATE
+#   One frame saved every 2 seconds while dataset mode is active.
+#
+# CLASS IDs  (6 classes)
+#   0  stop            — red octagon / red near-square sign
+#   1  speed_limit     — red-rimmed circular sign
+#   2  priority_warning— yellow triangle warning sign or blue circle priority sign
+#   3  traffic_light_red
+#   4  traffic_light_yellow
+#   5  traffic_light_green
+#
+# LABELING PIPELINE  (per frame)
+#   Frame is split into a top zone (top 30 % of height, traffic lights)
+#   and a lower zone (road signs).
+#
+#   RED channel
+#     Top zone  → traffic_light_red (class 3), blob centroid + radius box.
+#     Lower zone → contour-level shape analysis:
+#       • 4+ vertices, circularity 0.50–0.90, aspect 0.70–1.40 → stop (0)
+#       • circularity > 0.72 → speed_limit (1)
+#       • fallback: area ≥ 2500 px → stop (0), else speed_limit (1)
+#
+#   YELLOW channel  (HSV 18–35°)
+#     Top zone  → traffic_light_yellow (class 4).
+#     Lower zone → priority_warning (class 2) for triangle warning signs.
+#
+#   GREEN channel  (two HSV bands: 35–70° and 75–90°)
+#     Top zone only → traffic_light_green (class 5).
+#
+#   BLUE channel  (HSV 100–130°)
+#     Lower zone → priority_warning (class 2) for blue circle priority signs.
+#
+# POST-PROCESSING
+#   Deduplication: IoU-based NMS per class (threshold 0.6), keeps largest box.
+#   Edge filter: drops boxes touching frame bottom (y > 0.95) or side edges
+#                (x < 0.03 or x > 0.97) to eliminate ground reflections and
+#                partially visible signs.
+#
+# DEBUG OVERLAY
+#   Returns an annotated BGR copy of the frame with colored bounding boxes
+#   and class name labels; counter badge in top-right corner.
 # ============================================================
 
 import cv2

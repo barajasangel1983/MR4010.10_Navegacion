@@ -1,12 +1,49 @@
 # ============================================================
-# V1.6
-# Webots Self-Driving Controller
-# Grayscale Brightness Threshold + Hough Transform + PID + PS4 Bluetooth
-# Variant of V1.2SDF_ — replaces the HSV yellow mask with a grayscale
-# brightness threshold. Simpler pipeline; trades color selectivity for
-# robustness against HSV hue shifts caused by Webots lighting changes.
+# V1.8 — Webots Self-Driving Controller
 # ============================================================
-# SAME AS V1.6 + Addition of dataset mode
+#
+# LANE FOLLOWING
+#   - Grayscale brightness threshold (120–200) replaces HSV yellow mask.
+#   - Narrow trapezoidal ROI + morphological open/close/dilate before Canny+Hough.
+#   - Weighted-average Hough line fit with slope and boundary guards.
+#   - Moving-average smoothing (deque of 10 frames) + exponential temporal filter.
+#   - Virtual lane center estimated as yellow-line X + 110 px offset (right lane).
+#   - PID controller (KP=0.0015, KI=0.000, KD=0.0003) with output clamped to ±0.7 rad.
+#   - Steering smoothed per frame: 60 % previous + 40 % PID output.
+#   - Speed reduced proportionally with lateral error; floor at 8 km/h.
+#   - Line-lost fallback: hold last steering (×0.5 decay) at 10 km/h for 10 s,
+#     then revert automatically to MANUAL mode.
+#
+# LIDAR OBSTACLE DETECTION  (Sick LMS 291)
+#   - Front-center 40° inspection window (±20 samples from center).
+#   - Max detection range: 25 m; emergency-stop threshold: 15 m.
+#   - Between 15–25 m: slow to 50 % speed, lane following stays active.
+#   - Below 15 m: full brake, zero steering, classify obstacle type.
+#
+# SVM OBJECT DETECTION  (HOG features, run every 1 s to limit CPU load)
+#   - Vehicle detector: 64×64 sliding window over center 70 % width, step 64.
+#     Disabled by default (ENABLE_VEHICLE_DETECTION = False).
+#   - Pedestrian detector: multi-scale windows (30×65, 45×80, 60×95), step 48,
+#     with yellow-road-marking filter, vertical-position filter, edge-density
+#     filter, and NMS (IoU 0.25). Enabled by default.
+#   - Obstacle classification: PEDESTRIAN → normal stop (no hazard lights);
+#     BARREL/OBJECT → emergency stop + hazard flashers ON.
+#
+# DATASET CAPTURE  (dataset_mode_v2)
+#   - Toggle with keyboard D or PS4 Triangle.
+#   - Frame counter and mode overlay drawn on debug display.
+#
+# INPUT / CONTROL
+#   - Keyboard: arrows (speed/angle), S (toggle autonomous), A (save image), D (dataset).
+#   - PS4 controller: left stick (steering), R2 (throttle), L2 (brake/reverse),
+#     X (toggle autonomous), Square (save image), Triangle (dataset mode).
+#   - Debounce: 0.1 s keyboard, 0.5 s PS4 buttons.
+#
+# DEBUG DISPLAYS
+#   - "Self Driving Debug": annotated camera view with line, lane center, HUD.
+#   - "Yellow Mask Debug": binary ROI mask used for line detection.
+#   - "PID Response Chart": live error (px), steering (rad), and speed (km/h) traces.
+#   - Speed overlay color: cyan = autonomous, green = manual.
 # ============================================================
 
 from controller import Display, Keyboard, Lidar

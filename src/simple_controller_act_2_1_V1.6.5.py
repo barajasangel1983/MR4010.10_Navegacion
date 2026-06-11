@@ -5,6 +5,8 @@
 # Variant of V1.2SDF_ — replaces the HSV yellow mask with a grayscale
 # brightness threshold. Simpler pipeline; trades color selectivity for
 # robustness against HSV hue shifts caused by Webots lighting changes.
+
+# Sign finder with 3 ROIs with CNN based in webots
 # ============================================================
 
 from controller import Display, Keyboard, Lidar
