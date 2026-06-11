@@ -1187,8 +1187,16 @@ def main():
         if num_obj > 0 and ENABLE_OBJECT_DETECTION:
             objects = camera.getRecognitionObjects()
             # Debug: print all detected models (remove after fixing)
-            # all_models = [obj.getModel() for obj in objects]
-            # print(f"[DEBUG] Detected models: {all_models}")
+            all_models = [obj.getModel() for obj in objects]
+            print(f"[DEBUG] Detected models: {all_models}")
+            
+            for obj in objects:
+                model = obj.getModel()
+                # Debug: check category matching for each model
+                if any(c in model for c in CATEGORIES["sign"]):
+                    print(f"[SIGN MATCH] {model}")
+                if any(c in model for c in CATEGORIES["vehicle"]):
+                    print(f"[VEHICLE MATCH] {model}")
             
             for obj in objects:
                 model = obj.getModel()
