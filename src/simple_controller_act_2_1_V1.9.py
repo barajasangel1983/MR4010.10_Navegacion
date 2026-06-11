@@ -1162,11 +1162,26 @@ def main():
 
         # ==========================================
         # CAMERA RECOGNITION (built-in neural network)
+        # Filtered to relevant driving objects only
         # ==========================================
         
         recognized_objects = []
         vehicle_boxes = []
-        pedestrian_boxes = []
+        obstacle_boxes = []
+        
+        # Object categories for color coding
+        COLOR_VEHICLE = (0, 0, 255)       # Red — vehicles (bus, car)
+        COLOR_TRAFFIC_LIGHT = (0, 255, 255)  # Yellow
+        COLOR_SIGN = (255, 255, 0)        # Cyan
+        COLOR_OBSTACLE = (255, 0, 0)      # Blue — TrafficCone, Barrel
+        
+        # Filtered categories (ignore buildings, trees, roads, etc.)
+        CATEGORIES = {
+            "vehicle": ["Bus", "Bmw"],
+            "traffic_light": ["GenericTrafficLight", "CrossRoadsTrafficLight"],
+            "sign": ["CautionSign", "OrderSign", "StopSign", "YieldSign", "SpeedLimitSign"],
+            "obstacle": ["TrafficCone", "Barrel"]
+        }
         
         num_obj = camera.getRecognitionNumberOfObjects()
         if num_obj > 0 and ENABLE_OBJECT_DETECTION:
@@ -1178,27 +1193,49 @@ def main():
                 x, y = pos_img
                 w, h = size_img
                 
+                # Skip if out of frame bounds
+                if x + w < 0 or y + h < 0:
+                    continue
+                
                 # Distance from camera (z-axis)
                 obj_pos = obj.getPosition()
                 distance = obj_pos[2] if len(obj_pos) > 2 else 0
                 
-                # Color code by object type
-                if "Bmw" in model or "vehicle" in model.lower():
-                    color = (0, 0, 255)  # red
-                    vehicle_boxes.append((x, y, w, h))
-                    recognized_objects.append({"type": "vehicle", "distance": distance})
-                elif "Cone" in model or "barrel" in model.lower():
-                    color = (255, 0, 0)  # blue
-                    pedestrian_boxes.append((x, y, w, h))
-                    recognized_objects.append({"type": "obstacle", "distance": distance})
-                else:
-                    color = (0, 255, 0)  # green (others)
-                    recognized_objects.append({"type": model, "distance": distance})
+                # Classify into category
+                obj_type = None
+                color = None
+                display_name = model
                 
-                # Draw bounding box on debug frame
+                if any(c in model for c in CATEGORIES["vehicle"]):
+                    if "Bmw" in model:
+                        continue  # Skip our own car
+                    obj_type = "vehicle"
+                    color = COLOR_VEHICLE
+                    vehicle_boxes.append({"distance": distance, "pos": (x, y, w, h)})
+                elif any(c in model for c in CATEGORIES["traffic_light"]):
+                    obj_type = "traffic_light"
+                    color = COLOR_TRAFFIC_LIGHT
+                elif any(c in model for c in CATEGORIES["sign"]):
+                    obj_type = "sign"
+                    color = COLOR_SIGN
+                    # Extract just the sign type name
+                    for sign_type in CATEGORIES["sign"]:
+                        if sign_type in model:
+                            display_name = sign_type
+                            break
+                elif any(c in model for c in CATEGORIES["obstacle"]):
+                    obj_type = "obstacle"
+                    color = COLOR_OBSTACLE
+                    obstacle_boxes.append({"distance": distance, "type": model})
+                else:
+                    continue  # Skip buildings, trees, etc.
+                
+                recognized_objects.append({"type": obj_type, "distance": distance, "model": display_name})
+                
+                # Draw bounding box
                 cv2.rectangle(debug_frame, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(debug_frame, model, (x, y - 5),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)   
+                cv2.putText(debug_frame, display_name, (x, y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)   
 
         if line_detected:
 
