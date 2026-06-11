@@ -1186,6 +1186,10 @@ def main():
         num_obj = camera.getRecognitionNumberOfObjects()
         if num_obj > 0 and ENABLE_OBJECT_DETECTION:
             objects = camera.getRecognitionObjects()
+            # Debug: print all detected models (remove after fixing)
+            all_models = [obj.getModel() for obj in objects]
+            print(f"[DEBUG] Detected models: {all_models}")
+            
             for obj in objects:
                 model = obj.getModel()
                 pos_img = obj.getPositionOnImage()
