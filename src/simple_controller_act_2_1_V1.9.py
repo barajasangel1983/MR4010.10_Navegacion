@@ -1202,7 +1202,15 @@ def main():
                 model = obj.getModel()
                 # Debug: check category matching for each model
                 if any(c in model for c in CATEGORIES["sign"]):
-                    print(f"[SIGN MATCH] {model}")
+                    print(f"[SIGN MATCH] '{model}'")
+                else:
+                    # Check each sign category individually
+                    for sign_cat in CATEGORIES["sign"]:
+                        if sign_cat in model:
+                            print(f"[SIGN FOUND IN MODEL] model='{model}' with '{sign_cat}'")
+                            break
+                    else:
+                        print(f"[SIGN NO MATCH] model='{model}' (len={len(model)})")
                 if any(c in model for c in CATEGORIES["vehicle"]):
                     print(f"[VEHICLE MATCH] {model}")
             
