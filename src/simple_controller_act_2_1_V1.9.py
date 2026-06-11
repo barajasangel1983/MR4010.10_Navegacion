@@ -142,6 +142,14 @@ CAMERA_HEIGHT = 320
 ENABLE_OBJECT_DETECTION = True
 
 # ==============================
+# DEBUG PANEL
+# ==============================
+
+# Enables or disables the debug overlay on the camera display.
+# Toggle at runtime with key P.
+DEBUG_PANEL = True
+
+# ==============================
 # LIDAR OBSTACLE DETECTION CONFIG
 # ==============================
 
@@ -1071,6 +1079,10 @@ def main():
                 elif key in (ord("D"), ord("d")):
                     dataset_mode.toggle_dataset()
 
+                elif key in (ord("P"), ord("p")):
+                    DEBUG_PANEL = not DEBUG_PANEL
+                    print(f"Debug Panel: {'ON' if DEBUG_PANEL else 'OFF'}")
+
         # ==============================
         # PS4 CONTROLLER MANUAL MODE
         # ==============================
@@ -1509,6 +1521,17 @@ def main():
                 2
             )
 
+        # Debug Panel indicator
+        cv2.putText(
+            debug_frame,
+            f"DEBUG PANEL: {'ON' if DEBUG_PANEL else 'OFF'} [P to toggle]",
+            (30, 280),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 255),
+            2
+        )
+
         # Speed overlay — drawn on every frame in both manual and autonomous
         # modes so the operator always has current speed visible in the main
         # debug window without needing to read the separate PID chart.
@@ -1546,14 +1569,19 @@ def main():
         pid_chart.show()
 
         # Display image in Webots display
-        display_image(display_img, display_frame)
+        if DEBUG_PANEL:
+            display_image(display_img, display_frame)
 
-        # Optional OpenCV debug window
-        cv2.imshow("Self Driving Debug", display_frame)
-        cv2.imshow("Yellow Mask Debug", cv2.resize(yellow_roi, (640, 300)))
+            # Optional OpenCV debug window
+            cv2.imshow("Self Driving Debug", display_frame)
+            cv2.imshow("Yellow Mask Debug", cv2.resize(yellow_roi, (640, 300)))
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        else:
+            # Only check for quit when debug is off
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     cv2.destroyAllWindows()
 
