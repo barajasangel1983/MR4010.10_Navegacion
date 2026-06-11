@@ -1179,7 +1179,7 @@ def main():
         CATEGORIES = {
             "vehicle": ["bus"],
             "traffic_light": ["traffic light"],
-            "sign": ["speed limit panel", "highway sign"],
+            "sign": ["caution panel", "order panel", "speed limit panel", "yield panel", "highway sign"],
             "obstacle": ["traffic cone", "barrel", "crash barrier"]
         }
         
