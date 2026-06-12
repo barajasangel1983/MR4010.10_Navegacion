@@ -1,5 +1,5 @@
 # ============================================================
-# V1.9.10 — Webots Self-Driving Controller
+# V1.9.12 — Webots Self-Driving Controller
 # ============================================================
 #
 # LANE FOLLOWING
@@ -22,15 +22,29 @@
 #
 # CAMERA RECOGNITION  (Webots built-in neural network)
 #   - camera.recognitionEnable() — no training required.
-#   - Filtered categories: vehicle (bus), traffic_light, sign (caution/order/speed/yield/highway),
-#     obstacle (traffic cone, barrel, crash barrier). Buildings/trees/road ignored.
-#   - Color-coded boxes: red=vehicle, yellow=traffic light, cyan=sign, blue=obstacle.
-#   - Obstacle classification at < 15 m: VEHICLE → hazard+stop, OBSTACLE → hazard+stop,
-#     other recognized → stop (no hazard), no recognition → LIDAR_ONLY stop.
-#   - DEBUG_PRINT flag enables per-frame model name logging to console.
+#   - Vehicle categories (case-insensitive): bus, car, truck, van, toyota,
+#     lincoln, citroen, bmw, mercedes, suv. Own car (bmw) auto-skipped.
+#   - Also recognises: traffic_light, sign (caution/order/speed/yield/highway),
+#     obstacle (traffic cone, barrel, crash barrier). Buildings/trees ignored.
+#   - Color-coded bounding boxes: red=vehicle, yellow=traffic_light,
+#     cyan=sign, blue=obstacle.
+#   - Classification runs every frame (manual + autonomous) for dataset labeling.
+#   - Only camera objects within LIDAR_STOP_DISTANCE (15 m) are used for
+#     emergency classification — prevents distant buses from triggering stops.
+#
+# OBSTACLE CLASSIFICATION & EVASION PHASE  (all modes)
+#   - obstacle_type: VEHICLE | OBSTACLE | LIDAR_ONLY | OBJECT_AHEAD | ""
+#   - vehicle_nearby: True when a vehicle is confirmed < 15 m by both LiDAR+camera.
+#   - Evasion triggers ONLY for vehicles (hazard on + full brake).
+#     Non-vehicle obstacles (cones, barriers) → full brake, no hazard, no evasion.
+#   - evasion_phase state machine:
+#       0 NORMAL   — no vehicle in stop range
+#       1 EVADING  — vehicle_nearby is True
+#       2 RETURNING — vehicle just cleared; lasts RETURNING_DURATION (5 s)
 #
 # SENSORS  (GPS + Gyro + Distance Sensors)
-#   - GPS, Gyro, DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR enabled at startup; each skipped gracefully if not found.
+#   - GPS, Gyro, DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR enabled at startup;
+#     each skipped gracefully if device not found in Webots world.
 #   - Values read every frame and forwarded to the ADAS Monitor.
 #
 # ADAS MONITOR  (draw_adas_monitor)
@@ -38,15 +52,19 @@
 #   - Displays: Speed, Angle, Brake (VEHICLE STATE section).
 #   - Displays: GPS X/Y/Z in metres (GPS section).
 #   - Displays: Gyro ωX/ωY/ωZ in rad/s (GYRO section).
-#   - Displays: DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR live values with color coding
-#     (green > 1000, orange 500–1000, red < 500).
-#   - Reserved rows for FL/FC/FR/RL/RR distance sensors and LiDAR.
+#   - Displays: DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR with color coding
+#     (green > 1000, orange 500–1000, red < 500). LIDAR row reserved.
 #
 # DATASET CAPTURE  (dataset_mode_v3 — Behavioral Cloning)
 #   - Toggle with keyboard D or PS4 Triangle.
-#   - Captures (image, angle, speed, brake) at 2 Hz.
+#   - Captures at 2 Hz after all control decisions (labels match current frame).
+#   - Works in manual mode — captures expert driving demonstrations.
+#   - CSV columns: session_id, timestamp, image_filename, steering_angle,
+#     speed_kmh, brake, autonomous_mode, line_detected, gps_x, gps_y,
+#     lidar_obstacle_detected, lidar_obstacle_distance, evasion_phase, obstacle_type.
 #   - Images → data/behavioral_dataset/images/frame_XXXXXX.jpg
-#   - Metadata → data/behavioral_dataset/measurements.csv
+#   - Metadata → data/behavioral_dataset/measurements.csv (append mode)
+#   - Frame counter resumes from existing files — toggling D never overwrites.
 #
 # INPUT / CONTROL
 #   - Keyboard: arrows (speed/angle), S (autonomous), A (ADAS monitor),
@@ -56,10 +74,11 @@
 #   - Debounce: 0.1 s keyboard, 0.5 s PS4 buttons.
 #
 # DEBUG DISPLAYS
-#   - "Self Driving Debug": annotated camera view with line, lane center, HUD.
+#   - "Self Driving Debug": annotated camera view with line, lane center, HUD,
+#     obstacle status, evasion phase, and dataset capture indicator.
 #   - "Yellow Mask Debug": binary ROI mask used for line detection.
 #   - "PID Response Chart": live error (px), steering (rad), and speed (km/h) traces.
-#   - "ADAS Monitor": sensor dashboard (speed, angle, brake, GPS, gyro + reserved slots).
+#   - "ADAS Monitor": sensor dashboard (speed, angle, brake, GPS, gyro, DS array).
 #   - Speed overlay color: cyan = autonomous, green = manual.
 #   - DEBUG_PANEL (key P) gates the Self Driving Debug and Yellow Mask windows.
 #   - ADAS_MONITOR_ENABLED (key A) gates the ADAS Monitor window independently.
@@ -509,8 +528,8 @@ def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr
     data_row(479, "DS_RR  (rear-right)",  rr_str, ds_color(ds_rr_val))
 
     # ── LIDAR (reserved) ──────────────────────────────
-    section_header(438, "LIDAR")
-    reserved_row(460, "[ reserved — front distance, angle ]")
+    section_header(507, "LIDAR")
+    reserved_row(529, "[ reserved — front distance, angle ]")
 
     # Bottom border
     cv2.line(panel, (8, H - 8), (W - 8, H - 8), (50, 50, 50), 1)
@@ -784,6 +803,7 @@ def main():
     global DEBUG_PANEL, ADAS_MONITOR_ENABLED
     speed = 0
     angle = 0.0
+    brake = 0.0
     previous_angle = 0.0   # seed value for the steering smoothing
     last_press = {}
 
@@ -912,10 +932,13 @@ def main():
     print("PS4 Triangle = toggle dataset mode")
     print("PS4 Square = save image")
 
-    #Hazard lights control
-    #
     hazard_lights_on = False
     obstacle_status = "CLEAR"
+    obstacle_type = ""        # camera-confirmed type of the blocking object
+    vehicle_nearby = False    # True when a vehicle is confirmed < LIDAR_STOP_DISTANCE
+    evasion_phase = 0         # 0=NORMAL, 1=EVADING, 2=RETURNING
+    _evasion_clear_time = None
+    RETURNING_DURATION = 5.0  # seconds to stay in RETURNING phase after vehicle clears
 
     while robot.step() != -1:
         current_time = time.time()
@@ -935,16 +958,6 @@ def main():
         ds_fr_val = ds_fr.getValue() if ds_fr else None
         ds_rl_val = ds_rl.getValue() if ds_rl else None
         ds_rr_val = ds_rr.getValue() if ds_rr else None
-
-        # ==============================
-        # DATASET MODE CAPTURE
-        # ==============================
-        # DATASET MODE — BEHAVIORAL CLONING (v3)
-        ds_counter, ds_overlay = dataset_mode.try_capture(
-            frame, angle, speed, brake, current_time
-        )
-        if ds_overlay is not None:
-            display_frame = ds_overlay
 
         # ==============================
         # KEYBOARD CONTROL
@@ -1098,7 +1111,7 @@ def main():
         
         # Filtered categories (ignore buildings, trees, roads, etc.)
         CATEGORIES = {
-            "vehicle": ["bus"],
+            "vehicle": ["bus", "car", "truck", "van", "toyota", "lincoln", "citroen", "bmw", "mercedes", "suv"],
             "traffic_light": ["traffic light"],
             "sign": ["caution panel", "order panel", "speed limit panel", "yield panel", "highway sign"],
             "obstacle": ["traffic cone", "barrel", "crash barrier"]
@@ -1110,18 +1123,17 @@ def main():
             for obj in objects:
                 model = obj.getModel()
                 if DEBUG_PRINT:
-                    # Debug: check category matching for each model
-                    if any(c in model for c in CATEGORIES["sign"]):
+                    m = model.lower()
+                    if any(c in m for c in CATEGORIES["sign"]):
                         print(f"[SIGN MATCH] '{model}'")
                     else:
-                        # Check each sign category individually
                         for sign_cat in CATEGORIES["sign"]:
-                            if sign_cat in model:
+                            if sign_cat in m:
                                 print(f"[SIGN FOUND IN MODEL] model='{model}' with '{sign_cat}'")
                                 break
                         else:
                             print(f"[SIGN NO MATCH] model='{model}' (len={len(model)})")
-                    if any(c in model for c in CATEGORIES["vehicle"]):
+                    if any(c in m for c in CATEGORIES["vehicle"]):
                         print(f"[VEHICLE MATCH] {model}")
             
             for obj in objects:
@@ -1144,23 +1156,24 @@ def main():
                 color = None
                 display_name = model
                 
-                if any(c in model for c in CATEGORIES["vehicle"]):
-                    if "Bmw" in model:
+                model_lower = model.lower()
+                if any(c in model_lower for c in CATEGORIES["vehicle"]):
+                    if "bmw" in model_lower:
                         continue  # Skip our own car
                     obj_type = "vehicle"
                     color = COLOR_VEHICLE
-                elif any(c in model for c in CATEGORIES["traffic_light"]):
+                elif any(c in model_lower for c in CATEGORIES["traffic_light"]):
                     obj_type = "traffic_light"
                     color = COLOR_TRAFFIC_LIGHT
-                elif any(c in model for c in CATEGORIES["sign"]):
+                elif any(c in model_lower for c in CATEGORIES["sign"]):
                     obj_type = "sign"
                     color = COLOR_SIGN
                     # Extract just the sign type name
                     for sign_type in CATEGORIES["sign"]:
-                        if sign_type in model:
+                        if sign_type in model_lower:
                             display_name = sign_type
                             break
-                elif any(c in model for c in CATEGORIES["obstacle"]):
+                elif any(c in model_lower for c in CATEGORIES["obstacle"]):
                     obj_type = "obstacle"
                     color = COLOR_OBSTACLE
                 else:
@@ -1231,6 +1244,51 @@ def main():
 
 
         # ==============================
+        # OBSTACLE CLASSIFICATION (all modes — display + dataset)
+        # ==============================
+        # Runs every frame so obstacle_type, vehicle_nearby, and evasion_phase
+        # are populated during manual recording too.
+        obstacle_type = ""
+        vehicle_nearby = False
+
+        if lidar_obstacle and lidar_obstacle_distance is not None:
+            if lidar_obstacle_distance < LIDAR_STOP_DISTANCE:
+                nearby = [o for o in recognized_objects if abs(o["distance"]) < LIDAR_STOP_DISTANCE]
+                vehicle_nearby = any(o["type"] == "vehicle" for o in nearby)
+                if vehicle_nearby:
+                    obstacle_type = "VEHICLE"
+                    obstacle_status = "VEHICLE"
+                elif any(o["type"] == "obstacle" for o in nearby):
+                    obstacle_type = "OBSTACLE"
+                    obstacle_status = "OBSTACLE"
+                elif nearby:
+                    obstacle_type = nearby[0]["type"].upper()
+                    obstacle_status = obstacle_type
+                else:
+                    obstacle_type = "LIDAR_ONLY"
+                    obstacle_status = "LIDAR_ONLY"
+            elif lidar_obstacle_distance < LIDAR_MAX_DISTANCE:
+                obstacle_type = "OBJECT_AHEAD"
+                obstacle_status = "OBJECT AHEAD"
+        else:
+            obstacle_status = "CLEAR"
+
+        # Evasion phase state machine
+        if vehicle_nearby:
+            evasion_phase = 1
+            _evasion_clear_time = None
+        elif evasion_phase == 1:
+            # Vehicle just cleared — start return timer
+            evasion_phase = 2
+            _evasion_clear_time = current_time
+        elif evasion_phase == 2 and _evasion_clear_time is not None:
+            if (current_time - _evasion_clear_time) > RETURNING_DURATION:
+                evasion_phase = 0
+                _evasion_clear_time = None
+        else:
+            evasion_phase = 0
+
+        # ==============================
         # AUTONOMOUS MODE — PID + LIDAR SAFETY OVERRIDE
         # ==============================
 
@@ -1252,27 +1310,13 @@ def main():
                 brake = 0.0
 
                 if lidar_obstacle_distance < LIDAR_STOP_DISTANCE:
-                    # Classification based on camera recognition
-                    vehicle_detected = any(o["type"] == "vehicle" for o in recognized_objects)
-                    obstacle_detected = any(o["type"] == "obstacle" for o in recognized_objects)
-
+                    # obstacle_type and vehicle_nearby already set by classification block.
+                    # Evasion (hazard + stop) only for vehicles — cones/barrels just stop.
                     speed = 0
                     angle = 0.0
                     previous_angle = 0.0
                     brake = 1.0
-
-                    if vehicle_detected:
-                        hazard_lights_on = True
-                        obstacle_status = "VEHICLE"
-                    elif obstacle_detected:
-                        hazard_lights_on = True
-                        obstacle_status = "OBSTACLE"
-                    elif recognized_objects:
-                        hazard_lights_on = False
-                        obstacle_status = recognized_objects[0]["type"].upper()
-                    else:
-                        hazard_lights_on = False
-                        obstacle_status = "LIDAR_ONLY"
+                    hazard_lights_on = vehicle_nearby
 
                 else:
                     # Object detected between 15 m and 30 m:
@@ -1303,7 +1347,6 @@ def main():
             else:
                 # No emergency obstacle — resume normal autonomous lane following.
                 hazard_lights_on = False
-                obstacle_status = "CLEAR"
                 brake = 0
 
                 if line_detected:
@@ -1415,13 +1458,24 @@ def main():
             2
         )
 
+        phase_labels = {0: "NORMAL", 1: "EVADING", 2: "RETURNING"}
+        phase_colors = {0: (0, 255, 0), 1: (0, 0, 255), 2: (0, 165, 255)}
         cv2.putText(
             debug_frame,
-            f"Obstacle Type: {obstacle_status}",
+            f"Obstacle: {obstacle_status}  Type: {obstacle_type or '--'}",
             (30, 220),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 165, 255),
+            2
+        )
+        cv2.putText(
+            debug_frame,
+            f"Evasion Phase: {evasion_phase} ({phase_labels[evasion_phase]})",
+            (30, 250),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            phase_colors[evasion_phase],
             2
         )
 
@@ -1430,7 +1484,7 @@ def main():
             cv2.putText(
                 debug_frame,
                 f"[DS] CAPTURE #{dataset_mode.dataset_counter}  Mode: {'ON' if dataset_mode.dataset_mode else 'OFF'}",
-                (30, 250),
+                (30, 280),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (0, 255, 255),
@@ -1466,6 +1520,22 @@ def main():
         )
 
         display_frame = cv2.resize(debug_frame, (640, 300))
+
+        # ==============================
+        # DATASET MODE CAPTURE
+        # ==============================
+        # Placed after all control decisions so angle/speed/brake/line_detected
+        # reflect what was actually applied to the car this frame.
+        dataset_mode.try_capture(
+            frame, angle, speed, brake, current_time,
+            autonomous_mode=autonomous_mode,
+            line_detected=line_detected,
+            gps_vals=gps_vals,
+            lidar_obstacle_detected=lidar_obstacle,
+            lidar_obstacle_distance=lidar_obstacle_distance,
+            evasion_phase=evasion_phase,
+            obstacle_type=obstacle_type,
+        )
 
         # ==========================================
         # HAZARD LIGHT CONTROL
