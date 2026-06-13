@@ -1,5 +1,5 @@
 # ============================================================
-# V1.10.3 — Webots Self-Driving Controller
+# V1.10.11 — Webots Self-Driving Controller
 # ============================================================
 #
 # BEHAVIORAL CLONING (BC) MODEL + SENSOR-BASED RETURNING
@@ -14,8 +14,11 @@
 #     DS_MR (Middle Right) keeps car >= DS_RETURN_RIGHT_MIN from right road guard.
 #     Base steer RETURN_LANE_ANGLE (left) migrates car back toward left lane.
 #     Proportional correction softens left steer when DS_MR approaches target.
-#     Exits phase 2 immediately when line_detected=True → PID takes over.
-#     Safety: also exits after RETURNING_DURATION seconds regardless.
+#     Exits phase 2 when: (1) line_detected=True → PID takes over; OR
+#       (2) gyro wZ re-aligns with value saved at phase 1 entry (within WZ_RETURN_TOLERANCE)
+#         — ADAS Monitor shows "wZ align" row during phase 2: orange = still drifting,
+#           green = threshold met; console prints "RETURNING → NORMAL (wZ aligned: cur=X ref=X)";
+#       OR (3) RETURNING_DURATION timeout (safety fallback).
 #
 #   Trigger 3 — line_detected=False, evasion_phase=0 (LINE_LOST / intersections):
 #     BC maintains heading through avenue crossings where yellow line disappears.
@@ -74,6 +77,7 @@
 #   - Displays: Gyro ωX/ωY/ωZ in rad/s (GYRO section).
 #   - Displays: DS_ML, DS_MR, DS_FL, DS_FR, DS_RL, DS_RR with color coding
 #     (green > 1000, orange 500–1000, red < 500). LIDAR row reserved.
+#   - Displays: "wZ align" row (ref vs cur, green/orange) only during RETURNING phase.
 #
 # DATASET CAPTURE  (dataset_mode_v3 — Behavioral Cloning)
 #   - Toggle with keyboard D or PS4 Triangle.
@@ -226,7 +230,7 @@ LIDAR_MAX_DISTANCE = 25.0  # meters
 # Distance threshold to stop the vehicle.
 # This is intentionally smaller than 20 m because 20 m is the detection limit,
 # not necessarily the emergency stop distance.
-LIDAR_STOP_DISTANCE = 15.0  # meters
+LIDAR_STOP_DISTANCE = 10.0  # meters
 
 
 # ==============================
@@ -237,8 +241,27 @@ LIDAR_STOP_DISTANCE = 15.0  # meters
 # Tune DS_RETURN_RIGHT_MIN so the car stays ~2 m from the right guard.
 DS_RETURN_RIGHT_MIN    = 300   # below this → too close to right guard, steer left
 DS_RETURN_RIGHT_TARGET = 600   # ideal right clearance (used for proportional correction)
-RETURN_LANE_ANGLE      = -0.06 # base left-return steer (negative = left in this controller)
+RETURN_LANE_ANGLE      = -0.3 # base left-return steer (negative = left in this controller)
 RETURN_SPEED_RATIO     = 0.40  # fraction of AUTONOMOUS_SPEED used while returning
+
+# Phase 1 EVADING — left sensor clearance to trigger RETURNING
+# Sensors read ~1000 when clear (max range), ~400 when obstacle is alongside.
+# Latch fires when any sensor drops BELOW this value (obstacle detected).
+# Clear fires when ALL sensors rise ABOVE this value (obstacle gone).
+# Keep between the obstacle reading (~400) and the max clear reading (~1000).
+DS_LEFT_CLEAR_THRESHOLD = 950   # sensor units — tune per world
+EVADING_MAX_DURATION    = 10.0  # safety timeout (s): force → RETURNING if sensors never clear
+
+# Phase 1 EVADING — parallel control (DS_ML) once car is alongside the obstacle.
+# BC steers right first; once _left_ds_triggered, DS_ML takes over to hold parallel distance.
+# DS_ML reads ~400 when very close, ~1000 when clear.
+DS_LEFT_PARALLEL_MIN    = 350   # below this → too close to obstacle, nudge right
+DS_LEFT_PARALLEL_TARGET = 550   # ideal lateral distance to obstacle (go straight)
+PARALLEL_NUDGE_ANGLE    = -0.1  # small right steer when too close (positive = right)
+
+# Phase 2 RETURNING — exit conditions
+RETURNING_DURATION   = 5.0   # safety timeout (s): exit RETURNING if wZ never aligns
+WZ_RETURN_TOLERANCE  = 0.05  # rad/s: wZ must be within this of saved phase-1 value to exit
 
 # ==============================
 # BEHAVIORAL CLONING CONFIG
@@ -545,8 +568,14 @@ class PIDDebugChart:
 # ADAS MONITOR
 # ==============================
 
-def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val, ds_fl_val, ds_fr_val, ds_rl_val, ds_rr_val):
-    W, H = 400, 650
+def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals,
+                      ds_ml_val, ds_mr_val, ds_fl_val, ds_fr_val, ds_rl_val, ds_rr_val,
+                      autonomous_mode=False, evasion_phase=0, line_detected=True,
+                      bc_active=False, lidar_stop=False, lidar_ahead=False,
+                      lidar_obstacle=False, lidar_distance=None, lidar_angle=None,
+                      obstacle_type="", vehicle_nearby=False, parallel_active=False,
+                      saved_gyro_wz=None, current_gyro_wz=None):
+    W, H = 400, 833
     panel = np.zeros((H, W, 3), dtype=np.uint8)
 
     def section_header(y, title):
@@ -564,59 +593,137 @@ def draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr
         if val is None:
             return (55, 55, 55)
         if val < 500:
-            return (0, 0, 255)    # red — close
+            return (0, 0, 255)
         if val < 1000:
-            return (0, 165, 255)  # orange — approaching
-        return (0, 255, 0)        # green — clear
+            return (0, 165, 255)
+        return (0, 255, 0)
 
     # Title
     cv2.putText(panel, "ADAS  MONITOR", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
     cv2.line(panel, (8, 32), (W - 8, 32), (80, 80, 80), 1)
 
+    # ── MACHINE STATE ─────────────────────────────────
+    section_header(50, "MACHINE STATE")
+
+    # Mode
+    if autonomous_mode:
+        mode_str, mode_color = "AUTONOMOUS", (0, 255, 255)
+    else:
+        mode_str, mode_color = "MANUAL", (0, 255, 0)
+    data_row(72, "Mode", mode_str, mode_color)
+
+    # Phase
+    _phase_map = {
+        0: ("0 - NORMAL",    (0, 255, 0)),
+        1: ("1 - EVADING",   (0, 165, 255)),
+        2: ("2 - RETURNING", (0, 200, 255)),
+    }
+    phase_str, phase_color = _phase_map.get(evasion_phase, (str(evasion_phase), (210, 210, 210)))
+    if evasion_phase == 0:
+        if lidar_stop:
+            phase_str, phase_color = "EMERGENCY STOP", (0, 0, 255)
+        elif lidar_ahead:
+            phase_str, phase_color = "OBJECT AHEAD",   (0, 100, 255)
+    data_row(95, "Phase", phase_str, phase_color)
+
+    # Active controller
+    if lidar_stop:
+        ctrl_str, ctrl_color = "BRAKE (full)", (0, 0, 255)
+    elif evasion_phase == 1 and parallel_active:
+        ctrl_str, ctrl_color = "SENSOR  DS_ML", (0, 200, 100)
+    elif evasion_phase == 1 and bc_active:
+        ctrl_str, ctrl_color = "BC  EVADING", (0, 165, 255)
+    elif evasion_phase == 2:
+        ctrl_str, ctrl_color = "SENSOR  DS_MR", (0, 200, 255)
+    elif not line_detected and bc_active:
+        ctrl_str, ctrl_color = "BC  LINE_LOST", (255, 165, 0)
+    elif not line_detected:
+        ctrl_str, ctrl_color = "DECAY  fallback", (0, 80, 255)
+    elif autonomous_mode:
+        ctrl_str, ctrl_color = "PID  lane follow", (0, 255, 255)
+    else:
+        ctrl_str, ctrl_color = "MANUAL  input", (0, 255, 0)
+    data_row(118, "Control", ctrl_str, ctrl_color)
+
+    # Yellow line
+    if evasion_phase in (1, 2):
+        line_str, line_color = "N/A (off-lane)", (100, 100, 100)
+    elif line_detected:
+        line_str, line_color = "DETECTED", (0, 255, 0)
+    else:
+        line_str, line_color = "LOST", (0, 0, 255)
+    data_row(141, "Yellow line", line_str, line_color)
+
+    # wZ alignment row — only visible during RETURNING
+    if evasion_phase == 2 and saved_gyro_wz is not None and current_gyro_wz is not None:
+        diff = abs(current_gyro_wz - saved_gyro_wz)
+        wz_color = (0, 255, 0) if diff <= WZ_RETURN_TOLERANCE else (0, 165, 255)
+        wz_str = f"ref:{saved_gyro_wz:.3f}  cur:{current_gyro_wz:.3f}"
+        data_row(164, "wZ align", wz_str, wz_color)
+
+    cv2.line(panel, (8, 178), (W - 8, 178), (50, 50, 50), 1)
+
     # ── VEHICLE STATE ─────────────────────────────────
-    section_header(54, "VEHICLE STATE")
+    section_header(191, "VEHICLE STATE")
     spd_color = (0, 255, 0) if speed < 60 else (0, 165, 255)
     brk_color = (0, 0, 255) if brake > 0.1 else (210, 210, 210)
-    data_row(76,  "Speed",  f"{speed:.1f}  km/h", spd_color)
-    data_row(99,  "Angle",  f"{angle:.4f}  rad")
-    data_row(122, "Brake",  f"{brake:.2f}", brk_color)
+    data_row(213, "Speed",  f"{speed:.1f}  km/h", spd_color)
+    data_row(236, "Angle",  f"{angle:.4f}  rad")
+    data_row(259, "Brake",  f"{brake:.2f}", brk_color)
 
     # ── GPS ───────────────────────────────────────────
-    section_header(150, "GPS")
+    section_header(287, "GPS")
     if gps_vals is not None:
-        data_row(172, "X", f"{gps_vals[0]:.3f}  m")
-        data_row(195, "Y", f"{gps_vals[1]:.3f}  m")
-        data_row(218, "Z", f"{gps_vals[2]:.3f}  m")
+        data_row(309, "X", f"{gps_vals[0]:.3f}  m")
+        data_row(332, "Y", f"{gps_vals[1]:.3f}  m")
+        data_row(355, "Z", f"{gps_vals[2]:.3f}  m")
     else:
-        data_row(182, "Status", "NOT AVAILABLE", (0, 80, 255))
+        data_row(319, "Status", "NOT AVAILABLE", (0, 80, 255))
 
     # ── GYRO ──────────────────────────────────────────
-    section_header(246, "GYRO")
+    section_header(383, "GYRO")
     if gyro_vals is not None:
-        data_row(268, "wX", f"{gyro_vals[0]:.4f}  rad/s")
-        data_row(291, "wY", f"{gyro_vals[1]:.4f}  rad/s")
-        data_row(314, "wZ", f"{gyro_vals[2]:.4f}  rad/s")
+        data_row(405, "wX", f"{gyro_vals[0]:.4f}  rad/s")
+        data_row(428, "wY", f"{gyro_vals[1]:.4f}  rad/s")
+        data_row(451, "wZ", f"{gyro_vals[2]:.4f}  rad/s")
     else:
-        data_row(278, "Status", "NOT AVAILABLE", (0, 80, 255))
+        data_row(415, "Status", "NOT AVAILABLE", (0, 80, 255))
 
     # ── DISTANCE SENSORS ──────────────────────────────
-    section_header(342, "DISTANCE SENSORS")
+    section_header(479, "DISTANCE SENSORS")
     ml_str = f"{ds_ml_val:.1f}" if ds_ml_val is not None else "--"
     mr_str = f"{ds_mr_val:.1f}" if ds_mr_val is not None else "--"
     fl_str = f"{ds_fl_val:.1f}" if ds_fl_val is not None else "--"
     fr_str = f"{ds_fr_val:.1f}" if ds_fr_val is not None else "--"
     rl_str = f"{ds_rl_val:.1f}" if ds_rl_val is not None else "--"
     rr_str = f"{ds_rr_val:.1f}" if ds_rr_val is not None else "--"
-    data_row(364, "DS_ML  (mid-left)",  ml_str, ds_color(ds_ml_val))
-    data_row(387, "DS_MR  (mid-right)", mr_str, ds_color(ds_mr_val))
-    data_row(410, "DS_FL  (front-left)",  fl_str, ds_color(ds_fl_val))
-    data_row(433, "DS_FR  (front-right)", fr_str, ds_color(ds_fr_val))
-    data_row(456, "DS_RL  (rear-left)",   rl_str, ds_color(ds_rl_val))
-    data_row(479, "DS_RR  (rear-right)",  rr_str, ds_color(ds_rr_val))
+    data_row(501, "DS_ML  (mid-left)",    ml_str, ds_color(ds_ml_val))
+    data_row(524, "DS_MR  (mid-right)",   mr_str, ds_color(ds_mr_val))
+    data_row(547, "DS_FL  (front-left)",  fl_str, ds_color(ds_fl_val))
+    data_row(570, "DS_FR  (front-right)", fr_str, ds_color(ds_fr_val))
+    data_row(593, "DS_RL  (rear-left)",   rl_str, ds_color(ds_rl_val))
+    data_row(616, "DS_RR  (rear-right)",  rr_str, ds_color(ds_rr_val))
 
-    # ── LIDAR (reserved) ──────────────────────────────
-    section_header(507, "LIDAR")
-    reserved_row(529, "[ reserved — front distance, angle ]")
+    # ── LIDAR ─────────────────────────────────────────
+    section_header(644, "LIDAR  (Sick LMS 291)")
+
+    if lidar_obstacle and lidar_distance is not None:
+        dist_color = (0, 0, 255) if lidar_distance < LIDAR_STOP_DISTANCE else (0, 165, 255)
+        data_row(666, "Status",   "OBSTACLE DETECTED", dist_color)
+        data_row(689, "Distance", f"{lidar_distance:.2f}  m", dist_color)
+        ang_str = f"{lidar_angle:.1f}  deg" if lidar_angle is not None else "--"
+        data_row(712, "Angle",    ang_str, (210, 210, 210))
+        type_color = (0, 100, 255) if obstacle_type == "VEHICLE" else (210, 210, 210)
+        data_row(735, "Type",     obstacle_type if obstacle_type else "--", type_color)
+        vh_str = "YES" if vehicle_nearby else "NO"
+        vh_color = (0, 0, 255) if vehicle_nearby else (0, 200, 0)
+        data_row(758, "Vehicle",  vh_str, vh_color)
+    else:
+        data_row(666, "Status",   "CLEAR", (0, 255, 0))
+        data_row(689, "Distance", "--")
+        data_row(712, "Angle",    "--")
+        data_row(735, "Type",     "--")
+        data_row(758, "Vehicle",  "NO", (0, 200, 0))
 
     # Bottom border
     cv2.line(panel, (8, H - 8), (W - 8, H - 8), (50, 50, 50), 1)
@@ -1014,8 +1121,16 @@ def main():
     obstacle_type = ""        # camera-confirmed type of the blocking object
     vehicle_nearby = False    # True when a vehicle is confirmed < LIDAR_STOP_DISTANCE
     evasion_phase = 0         # 0=NORMAL, 1=EVADING, 2=RETURNING
+    _evasion_start_time = None  # set when entering phase 1 — used for safety timeout
     _evasion_clear_time = None
-    RETURNING_DURATION = 5.0  # seconds to stay in RETURNING phase after vehicle clears
+    _left_ds_triggered = False  # True once a left sensor detects the obstacle alongside
+    _saved_gyro_wz = None       # gyro wZ saved at phase 1 entry — used as heading reference
+
+    # State transition tracking — prints only fire on change, not every frame
+    _prev_evasion_phase  = 0
+    _prev_line_detected  = True   # assume line visible at start
+    _prev_lidar_stop     = False  # True when last frame triggered emergency stop
+    _prev_lidar_ahead    = False  # True when last frame triggered slow-down
 
     # ==============================
     # BEHAVIORAL CLONING — load model
@@ -1023,7 +1138,7 @@ def main():
     bc_model = _bc_load_model()
     bc_active = False   # True when BC actually controlled the angle this frame
 
-    print("Controller ready. V1.10.3")
+    print("Controller ready. V1.10.10")
     print("Keyboard S = toggle autonomous mode")
     print("Keyboard A = toggle ADAS monitoring panel")
     print("Keyboard B = toggle Behavioral Cloning (BC) evasion model")
@@ -1373,23 +1488,66 @@ def main():
             obstacle_status = "CLEAR"
 
         # Evasion phase state machine
-        if vehicle_nearby:
+        # DS latch + clear check runs first — physical clearance overrides vehicle_nearby.
+        # (camera may still see the vehicle from behind even after the car has fully passed it)
+        if evasion_phase == 1:
+            # Update latch every frame while evading
+            if (ds_fl_val is not None and ds_fl_val <= DS_LEFT_CLEAR_THRESHOLD) or \
+               (ds_ml_val is not None and ds_ml_val <= DS_LEFT_CLEAR_THRESHOLD) or \
+               (ds_rl_val is not None and ds_rl_val <= DS_LEFT_CLEAR_THRESHOLD):
+                _left_ds_triggered = True
+
+            left_clear = (
+                (ds_fl_val is None or ds_fl_val > DS_LEFT_CLEAR_THRESHOLD) and
+                (ds_ml_val is None or ds_ml_val > DS_LEFT_CLEAR_THRESHOLD) and
+                (ds_rl_val is None or ds_rl_val > DS_LEFT_CLEAR_THRESHOLD)
+            )
+            timed_out = (_evasion_start_time is not None and
+                         (current_time - _evasion_start_time) > EVADING_MAX_DURATION)
+
+            if (_left_ds_triggered and left_clear) or timed_out:
+                # Obstacle physically passed — go to RETURNING regardless of camera/LiDAR
+                evasion_phase = 2
+                _evasion_clear_time = current_time
+                reason = "left sensors clear" if _left_ds_triggered else f"timeout {EVADING_MAX_DURATION:.0f}s"
+                print(f"[STATE] EVADING → RETURNING  ({reason}, DS_MR steering,"
+                      f" timeout={RETURNING_DURATION:.0f}s)")
+            elif vehicle_nearby:
+                evasion_phase = 1  # still alongside — keep evading
+            # else: vehicle_nearby dropped but latch not yet set → keep evading, wait for DS
+
+        elif vehicle_nearby:
+            # Fresh entry into EVADING from NORMAL or RETURNING
+            if _prev_evasion_phase != 1:
+                _evasion_start_time = current_time
+                _left_ds_triggered = False  # reset for this new evasion event
+                _saved_gyro_wz = gyro_vals[2] if gyro_vals is not None else None
+                wz_str = f"{_saved_gyro_wz:.3f}" if _saved_gyro_wz is not None else "N/A"
+                print(f"[STATE] {'NORMAL' if _prev_evasion_phase == 0 else 'RETURNING'}"
+                      f" → EVADING  (vehicle < {LIDAR_STOP_DISTANCE:.0f}m,"
+                      f" type={obstacle_type}, wZ_ref={wz_str})")
             evasion_phase = 1
             _evasion_clear_time = None
-        elif evasion_phase == 1:
-            # Vehicle just cleared — start return timer
-            evasion_phase = 2
-            _evasion_clear_time = current_time
         elif evasion_phase == 2 and _evasion_clear_time is not None:
-            # Exit RETURNING early if PID found the yellow line (car is back in left lane)
-            # or if the return timer has expired
-            if line_detected or (current_time - _evasion_clear_time) > RETURNING_DURATION:
+            wz_now = gyro_vals[2] if gyro_vals is not None else None
+            wz_aligned = (_saved_gyro_wz is not None and wz_now is not None and
+                          abs(wz_now - _saved_gyro_wz) <= WZ_RETURN_TOLERANCE)
+            timed_out_p2 = (current_time - _evasion_clear_time) > RETURNING_DURATION
+
+            if line_detected or wz_aligned or timed_out_p2:
                 evasion_phase = 0
                 _evasion_clear_time = None
                 if line_detected:
-                    print("[RETURN] Yellow line found — handing control back to PID")
+                    print("[STATE] RETURNING → NORMAL  (yellow line found — PID resumes)")
+                elif wz_aligned:
+                    print(f"[STATE] RETURNING → NORMAL  (wZ aligned:"
+                          f" cur={wz_now:.3f}  ref={_saved_gyro_wz:.3f})")
+                else:
+                    print(f"[STATE] RETURNING → NORMAL  (timeout {RETURNING_DURATION:.0f}s)")
+                _saved_gyro_wz = None
         else:
             evasion_phase = 0
+        _prev_evasion_phase = evasion_phase
 
         # ==============================
         # AUTONOMOUS MODE — PID + LIDAR SAFETY OVERRIDE
@@ -1403,28 +1561,52 @@ def main():
             # ==========================================
             bc_active = False
 
-            # ── Phase 1 EVADING: BC steers around the vehicle ────────────────
-            if evasion_phase == 1 and BC_ENABLED and bc_model is not None:
-                try:
-                    angle = _bc_predict(bc_model, frame)
+            # ── Phase 1 EVADING ───────────────────────────────────────────────
+            # Sub-phase A (_left_ds_triggered=False): BC steers right to clear obstacle.
+            # Sub-phase B (_left_ds_triggered=True):  DS_ML holds parallel distance until passed.
+            if evasion_phase == 1:
+                bc_active = True
+                hazard_lights_on = vehicle_nearby
+                speed = int(0.35 * AUTONOMOUS_SPEED)
+                brake = 0.0
+
+                if not _left_ds_triggered:
+                    # ── 1A: BC — steer right to evade ──────────────────────────
+                    if BC_ENABLED and bc_model is not None:
+                        try:
+                            angle = _bc_predict(bc_model, frame)
+                            angle = max(-MAX_ANGLE, min(MAX_ANGLE, angle))
+                            previous_angle = angle
+                        except Exception as _e:
+                            print(f"[BC] Inference error: {_e} — holding previous angle")
+                            angle = previous_angle
+                    else:
+                        angle = previous_angle  # BC unavailable — hold last angle
+                    cv2.putText(debug_frame,
+                                f"AUTO | BC EVADING  angle: {angle:.3f}",
+                                (30, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.8, (0, 165, 255), 2)
+                else:
+                    # ── 1B: DS_ML parallel — straighten and hold lateral distance ──
+                    steer = 0.0  # default: go straight
+                    if ds_ml_val is not None:
+                        if ds_ml_val < DS_LEFT_PARALLEL_MIN:
+                            # Too close to obstacle — nudge right
+                            steer = PARALLEL_NUDGE_ANGLE
+                        elif ds_ml_val < DS_LEFT_PARALLEL_TARGET:
+                            # Proportional: closer to min = more right steer
+                            ratio = 1.0 - (ds_ml_val - DS_LEFT_PARALLEL_MIN) / \
+                                          (DS_LEFT_PARALLEL_TARGET - DS_LEFT_PARALLEL_MIN)
+                            steer = PARALLEL_NUDGE_ANGLE * ratio
+                        # else: ds_ml_val >= TARGET → go straight (steer=0)
+                    angle = 0.6 * previous_angle + 0.4 * steer
                     angle = max(-MAX_ANGLE, min(MAX_ANGLE, angle))
                     previous_angle = angle
-                    bc_active = True
-                    hazard_lights_on = vehicle_nearby
-                    speed = int(0.35 * AUTONOMOUS_SPEED)
-                    brake = 0.0
-                    cv2.putText(
-                        debug_frame,
-                        f"AUTO | BC EVADING  angle: {angle:.3f}",
-                        (30, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 165, 255),
-                        2
-                    )
-                except Exception as _e:
-                    print(f"[BC] Inference error: {_e} — falling back to PID")
-                    bc_active = False
+                    ml_str = f"{ds_ml_val:.0f}" if ds_ml_val is not None else "N/A"
+                    cv2.putText(debug_frame,
+                                f"AUTO | PARALLEL  angle:{angle:.3f}  DS_ML:{ml_str}",
+                                (30, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.8, (0, 200, 100), 2)
 
             # ── Phase 2 RETURNING: sensor-based stabilization + gradual left return ──
             elif evasion_phase == 2:
@@ -1484,6 +1666,11 @@ def main():
                 if lidar_obstacle_distance < LIDAR_STOP_DISTANCE:
                     # obstacle_type and vehicle_nearby already set by classification block.
                     # Evasion (hazard + stop) only for vehicles — cones/barrels just stop.
+                    if not _prev_lidar_stop:
+                        print(f"[STATE] → EMERGENCY STOP  (obstacle={obstacle_type},"
+                              f" dist={lidar_obstacle_distance:.1f}m, hazard={vehicle_nearby})")
+                    _prev_lidar_stop = True
+                    _prev_lidar_ahead = False
                     speed = 0
                     angle = 0.0
                     previous_angle = 0.0
@@ -1493,6 +1680,11 @@ def main():
                 else:
                     # Object detected between 15 m and 30 m:
                     # slow down, but keep lane-following steering active
+                    if not _prev_lidar_ahead:
+                        print(f"[STATE] → OBJECT AHEAD  (dist={lidar_obstacle_distance:.1f}m,"
+                              f" speed reduced to 50%)")
+                    _prev_lidar_stop = False
+                    _prev_lidar_ahead = True
                     hazard_lights_on = False
                     obstacle_status = "OBJECT AHEAD"
 
@@ -1517,12 +1709,19 @@ def main():
 
             elif not bc_active:
                 # No emergency obstacle — resume normal autonomous lane following.
+                if _prev_lidar_stop or _prev_lidar_ahead:
+                    print("[STATE] LIDAR → CLEAR  (obstacle gone, resuming lane following)")
+                _prev_lidar_stop = False
+                _prev_lidar_ahead = False
                 hazard_lights_on = False
                 brake = 0
 
                 if line_detected:
                     # Yellow line visible — clear fallback timer and follow the lane.
+                    if not _prev_line_detected:
+                        print("[STATE] LINE_LOST → NORMAL  (yellow line reacquired — PID resumes)")
                     line_lost_time = None
+                    _prev_line_detected = True
 
                     pid_output = pid.compute(error, dt)
 
@@ -1552,6 +1751,9 @@ def main():
                     # Record first lost frame for the safety countdown
                     if line_lost_time is None:
                         line_lost_time = current_time
+                        bc_label = "BC LINE_LOST" if (BC_ENABLED and bc_model) else "DECAY fallback"
+                        print(f"[STATE] NORMAL → LINE_LOST  ({bc_label}, countdown=10s)")
+                    _prev_line_detected = False
 
                     time_remaining = max(0.0, 10.0 - (current_time - line_lost_time))
                     countdown = int(np.ceil(time_remaining))
@@ -1741,7 +1943,17 @@ def main():
         # ADAS MONITOR
         # ==============================
         if ADAS_MONITOR_ENABLED:
-            draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals, ds_ml_val, ds_mr_val, ds_fl_val, ds_fr_val, ds_rl_val, ds_rr_val)
+            draw_adas_monitor(speed, angle, brake, gps_vals, gyro_vals,
+                              ds_ml_val, ds_mr_val, ds_fl_val, ds_fr_val, ds_rl_val, ds_rr_val,
+                              autonomous_mode=autonomous_mode, evasion_phase=evasion_phase,
+                              line_detected=line_detected, bc_active=bc_active,
+                              lidar_stop=_prev_lidar_stop, lidar_ahead=_prev_lidar_ahead,
+                              lidar_obstacle=lidar_obstacle, lidar_distance=lidar_obstacle_distance,
+                              lidar_angle=lidar_obstacle_angle, obstacle_type=obstacle_type,
+                              vehicle_nearby=vehicle_nearby,
+                              parallel_active=(evasion_phase == 1 and _left_ds_triggered),
+                              saved_gyro_wz=_saved_gyro_wz,
+                              current_gyro_wz=(gyro_vals[2] if gyro_vals is not None else None))
 
         # Display image in Webots display
         if DEBUG_PANEL:
