@@ -1,0 +1,29 @@
+{
+  "img_h": 66,
+  "img_w": 200,
+  "crop_top": 0.38,
+  "crop_bottom": 0.88,
+  "model_path": "D:\\ML\\Projects\\Project_5_MR4010.10_Navegacion\\MR4010.10_Navegacion\\models\\bc_behavior_model.pt",
+  "val_mae_rad": 0.08716878895704436,
+  "val_rmse_rad": 0.11833959494075809,
+  "best_epoch": 6,
+  "train_samples": 3937,
+  "val_samples": 1297,
+  "phase_weights": {
+    "0": 1.5409001956947161,
+    "1": 7.585741811175337,
+    "2": 11.894259818731118,
+    "3": 18.059633027522935,
+    "4": 12.538216560509554
+  },
+  "class_labels": {
+    "0": "NORMAL",
+    "1": "EVADING",
+    "2": "RETURNING",
+    "3": "SHARP_LEFT",
+    "4": "SHARP_RIGHT"
+  },
+  "contributors": [
+    "A01"
+  ]
+}

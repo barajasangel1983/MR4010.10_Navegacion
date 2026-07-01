@@ -37,6 +37,15 @@ data/*.bag
 
 # Training datasets — large binary collection
 data/data_svm/
+data/behavioral_dataset_*/
+data/behavioral_dataset_CIL_*/
+data/*.zip
+
+# CIL training data
+Notebooks/Module1/CIL_data/
+
+# Screenshots / screen captures
+src/*.png
 
 # Models (keep large checkpoints out)
 models/*.bin
